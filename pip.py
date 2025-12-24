@@ -246,33 +246,69 @@ class DownloadManager(QObject):
         self.threadpool.setMaxThreadCount(5)
 
     def _find_best_url(self, package_info: PackageInfo, python_version: str, platform: str) -> Optional[Dict]:
-        """Finds the best matching wheel file URL from the list of available files."""
+        """Finds the best matching wheel file URL from the list of available files with STRICT filtering."""
         wheels = [f for f in package_info.urls if f.get('packagetype') == 'bdist_wheel']
         if not wheels:
             return None # No wheels available
 
         py_ver_short = python_version.replace('.', '')
         candidates = []
+        
         for wheel in wheels:
             filename = wheel.get('filename', '')
-            score = 0
-            # Higher score for more specific matches
-            if platform != 'any' and platform in filename:
-                score += 10
-            if f'cp{py_ver_short}' in filename or f'py{py_ver_short}' in filename:
-                score += 5
-            if 'any' in filename: # 'any' is a fallback
-                score += 1
             
-            if score > 0:
-                candidates.append((score, wheel))
+            # --- STRICT FILTERING ---
+            
+            # 1. Platform Check
+            if platform != 'any':
+                # If a specific platform is requested, the wheel MUST contain it OR be 'any'
+                # e.g. win_amd64 must match win_amd64.
+                if platform not in filename and 'any' not in filename:
+                    continue
+            
+            # 2. Python Version Check
+            # Check for cp tags like cp311, cp39
+            cp_matches = re.findall(r'cp(\d+)', filename)
+            if cp_matches:
+                # If wheel specifies a CP version, it MUST match our target OR be abi3
+                is_compatible = False
+                for match in cp_matches:
+                    if match == py_ver_short:
+                        is_compatible = True
+                        break
+                
+                if not is_compatible and 'abi3' in filename:
+                    is_compatible = True
+                    
+                if not is_compatible:
+                    # Wheel is for a different python version (e.g. cp311 != cp39)
+                    continue
+            
+            # --- SCORING ---
+            score = 0
+            
+            # Exact platform match is better than 'any'
+            if platform != 'any' and platform in filename:
+                score += 100
+                
+            # Exact python version match is better than abi3 or py3
+            if f'cp{py_ver_short}' in filename:
+                score += 50
+            elif f'py{py_ver_short}' in filename: # e.g. py39
+                score += 40
+            elif 'abi3' in filename:
+                score += 30
+            elif 'py3' in filename:
+                score += 20
+            
+            candidates.append((score, wheel))
         
         if candidates:
             # Return the wheel with the highest score
-            return sorted(candidates, key=lambda x: x[0], reverse=True)[0][1]
+            best_match = sorted(candidates, key=lambda x: x[0], reverse=True)[0][1]
+            return best_match
         
-        # If no candidates scored, fall back to the first available wheel
-        return wheels[0]
+        return None
 
     def add_to_queue(self, package_info: PackageInfo, python_version: str, platform: str, output_dir: str):
         """Add package to download queue"""
@@ -454,7 +490,11 @@ class MainWindow(QMainWindow):
 
     def create_toolbar(self):
         toolbar = self.addToolBar("Main"); toolbar.setMovable(False)
-        toolbar = self.addToolBar("Main"); toolbar.setMovable(False)
+        
+        import_action = QAction("📄 Import Requirements", self)
+        import_action.triggered.connect(self.import_requirements)
+        toolbar.addAction(import_action)
+
 
     def create_search_section(self) -> QHBoxLayout:
         search_layout = QHBoxLayout(); search_layout.setContentsMargins(0, 10, 0, 10)
@@ -473,7 +513,7 @@ class MainWindow(QMainWindow):
 
     def create_config_section(self) -> QGroupBox:
         config_group = QGroupBox("Download Configuration"); config_layout = QHBoxLayout(config_group)
-        config_layout.addWidget(QLabel("🔧 Python:")); self.python_combo = QComboBox(); self.python_combo.addItems(["3.11", "3.10", "3.9", "3.8"]); config_layout.addWidget(self.python_combo)
+        config_layout.addWidget(QLabel("🔧 Python:")); self.python_combo = QComboBox(); self.python_combo.addItems(["3.13", "3.12", "3.11", "3.10", "3.9", "3.8"]); config_layout.addWidget(self.python_combo)
         config_layout.addWidget(QLabel("📱 Platform:")); self.platform_combo = QComboBox(); self.platform_combo.addItems(["any", "win_amd64", "manylinux2014_x86_64"]); config_layout.addWidget(self.platform_combo)
         self.include_deps_checkbox = QCheckBox("Include Dependencies"); self.include_deps_checkbox.setChecked(True); config_layout.addWidget(self.include_deps_checkbox)
         config_layout.addStretch()
@@ -497,8 +537,41 @@ class MainWindow(QMainWindow):
         self.status_bar.showMessage(f"Resolving dependencies for '{query}'...")
         self.download_button.setEnabled(False); self.search_bar.setEnabled(False)
         self.processed_packages.clear()
-        worker = Worker(self.resolve_and_queue_dependencies_work, query)
+        self.processed_packages.clear()
+        worker = Worker(self.resolve_and_queue_dependencies_work, [query])
         self.search_engine.threadpool.start(worker)
+
+    def import_requirements(self):
+        """Allows user to import a requirements.txt file."""
+        file_path, _ = QFileDialog.getOpenFileName(self, "Import Requirements", "", "Text Files (*.txt);;All Files (*)")
+        if not file_path:
+            return
+
+        try:
+            with open(file_path, 'r') as f:
+                content = f.read()
+            
+            packages = []
+            for line in content.splitlines():
+                line = line.strip()
+                # Skip contents that are comments, empty, or flags
+                if not line or line.startswith('#') or line.startswith('-'):
+                    continue
+                packages.append(line)
+            
+            if not packages:
+                QMessageBox.warning(self, "Import Error", "No valid packages found in file.")
+                return
+
+            self.status_bar.showMessage(f"Resolving dependencies for {len(packages)} packages...")
+            self.download_button.setEnabled(False); self.search_bar.setEnabled(False)
+            self.processed_packages.clear()
+            
+            worker = Worker(self.resolve_and_queue_dependencies_work, packages)
+            self.search_engine.threadpool.start(worker)
+
+        except Exception as e:
+            QMessageBox.critical(self, "Import Error", f"Failed to read file: {e}")
 
     def get_evaluation_environment(self) -> Dict:
         """Creates an environment dictionary for evaluating dependency markers."""
@@ -520,9 +593,9 @@ class MainWindow(QMainWindow):
         # to avoid pulling in optional dependencies like 'all' or 'test'.
         return env
 
-    def resolve_and_queue_dependencies_work(self, initial_package_name: str):
+    def resolve_and_queue_dependencies_work(self, initial_packages: List[str]):
         """Worker thread function to recursively find and queue all required dependencies."""
-        packages_to_process = [initial_package_name]
+        packages_to_process = list(initial_packages)
         pypi_mirror = self.config_manager.get("network.pypi_mirror")
         environment = self.get_evaluation_environment()
         
