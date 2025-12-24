@@ -263,7 +263,8 @@ class DownloadManager(QObject):
             if platform != 'any':
                 # If a specific platform is requested, the wheel MUST contain it OR be 'any'
                 # e.g. win_amd64 must match win_amd64.
-                if platform not in filename and 'any' not in filename:
+                # FIX: Check for '-any' to avoid matching 'manylinux'
+                if platform not in filename and '-any' not in filename:
                     continue
             
             # 2. Python Version Check
