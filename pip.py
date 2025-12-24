@@ -693,6 +693,7 @@ class DownloadQueueWidget(QGroupBox):
         super().__init__("Download Queue", parent)
         self.setFont(QFont("Arial", 12, QFont.Bold))
         self.download_manager = download_manager
+        self.last_update_time = {} # Throttle updates
         self.init_ui()
         self.download_manager.progress_updated.connect(self.update_download_item)
 
@@ -731,21 +732,56 @@ class DownloadQueueWidget(QGroupBox):
         size_str = f"{item.downloaded_bytes/1024**2:.2f} / {item.total_bytes/1024**2:.2f} MB" if item.total_bytes else "0 / 0 MB"
         self.downloads_table.setItem(row, 1, QTableWidgetItem(size_str))
         self.downloads_table.setItem(row, 2, QTableWidgetItem(item.status.value))
-        progress_bar = QProgressBar(); progress_bar.setValue(int(item.progress)); progress_bar.setTextVisible(True); self.downloads_table.setCellWidget(row, 3, progress_bar)
+        
+        # Optimize Progress Bar - Reuse if exists
+        progress_bar = self.downloads_table.cellWidget(row, 3)
+        if not isinstance(progress_bar, QProgressBar):
+            progress_bar = QProgressBar()
+            progress_bar.setTextVisible(True)
+            self.downloads_table.setCellWidget(row, 3, progress_bar)
+        progress_bar.setValue(int(item.progress))
+        
         speed_str = f"{item.speed/1024**2:.2f} MB/s" if item.speed > 0 else "N/A"
         self.downloads_table.setItem(row, 4, QTableWidgetItem(speed_str))
         
-        stop_btn = QPushButton("Stop")
-        stop_btn.setStyleSheet("background-color: #d9534f; color: white; border: none; padding: 5px; border-radius: 4px;")
+        # Optimize Stop Button - Reuse if exists
+        stop_btn = self.downloads_table.cellWidget(row, 5)
+        if not isinstance(stop_btn, QPushButton):
+            stop_btn = QPushButton("Stop")
+            stop_btn.setStyleSheet("background-color: #d9534f; color: white; border: none; padding: 5px; border-radius: 4px;")
+            self.downloads_table.setCellWidget(row, 5, stop_btn)
+        
+        # We need to reconnect logic if we are reusing, but disconnect old first to avoid doubles?
+        # Actually simplest for now is to just update state/style. 
+        # Ideally we don't reconnect every time. Let's just update the click handler if it's new.
+        # But 'item' changes. The lambda captures 'did'. 'did' is constant for the row usually.
+        # So we only connect ONCE when creating.
+        try:
+            stop_btn.clicked.disconnect() 
+        except TypeError:
+            pass # No connection yet
         stop_btn.clicked.connect(lambda _, did=item.download_id: self.download_manager.cancel_download(did))
+
         if item.status in [DownloadStatus.COMPLETED, DownloadStatus.FAILED, DownloadStatus.CANCELLED]:
             stop_btn.setEnabled(False)
             stop_btn.setStyleSheet("background-color: #cccccc; color: grey; border: none; padding: 5px; border-radius: 4px;")
-            
-        self.downloads_table.setCellWidget(row, 5, stop_btn)
+        else:
+            stop_btn.setEnabled(True)
+            stop_btn.setStyleSheet("background-color: #d9534f; color: white; border: none; padding: 5px; border-radius: 4px;")
 
     @pyqtSlot(str, dict)
     def update_download_item(self, download_id, progress_dict):
+        # Throttle updates to ~10fps per item to prevent UI freeze/flicker
+        current_time = time.time()
+        item_status = progress_dict.get('status', DownloadStatus.QUEUED)
+        is_terminal = item_status in [DownloadStatus.COMPLETED, DownloadStatus.FAILED, DownloadStatus.CANCELLED]
+        
+        if not is_terminal:
+            last_time = self.last_update_time.get(download_id, 0)
+            if current_time - last_time < 0.1: # 100ms throttle
+                return
+            self.last_update_time[download_id] = current_time
+        
         queue = self.download_manager.get_queue()
         try:
             # A more robust way to find the row
