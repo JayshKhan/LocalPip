@@ -1,0 +1,20 @@
+{
+    "network": {
+        "pypi_mirror": "https://pypi.org/simple/",
+        "timeout": 30,
+        "max_concurrent": 5,
+        "verify_ssl": true
+    },
+    "ui": {
+        "theme": "System",
+        "window_size": {
+            "width": 1200,
+            "height": 800
+        }
+    },
+    "download": {
+        "default_path": "/home/internet/downloaded_wheels",
+        "include_dependencies": true,
+        "verify_checksums": true
+    }
+}
