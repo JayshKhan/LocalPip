@@ -10,6 +10,7 @@
 - **🎯 Cross-Platform Support**: Download wheels for Windows (`win_amd64`), Linux (`manylinux`), or any other platform.
 - **🐍 Python Version Targeting**: Specify which Python version (3.8, 3.9, 3.10, 3.11) you are targeting.
 - **✨ specific Version Support**: Need an older version? Search for `package==1.2.3` to get exactly what you need.
+- **🛑 Stop Downloads**: Made a mistake? Cancel downloads instantly with a single click.
 - **🖥️ Clean UI**: A beautiful, modern interface with a built-in download queue and detailed package information.
 
 ## Installation

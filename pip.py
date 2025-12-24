@@ -90,6 +90,7 @@ class DownloadItem:
     speed: float = 0.0
     eta: int = 0
     error_message: str = ""
+    cancelled: bool = False
 
 
 # --- Custom Events for thread-safe GUI updates ---
@@ -321,6 +322,13 @@ class DownloadManager(QObject):
             start_time = time.time()
             with open(item.output_path, 'wb') as f:
                 for chunk in response.iter_content(chunk_size=8192):
+                    if item.cancelled:
+                        f.close()
+                        os.remove(item.output_path)
+                        item.status = DownloadStatus.CANCELLED
+                        self.progress_updated.emit(item.download_id, item.__dict__)
+                        return
+
                     if chunk:
                         f.write(chunk)
                         item.downloaded_bytes += len(chunk)
@@ -339,7 +347,17 @@ class DownloadManager(QObject):
             item.status = DownloadStatus.FAILED
             item.error_message = f"File error: {e}"
             logging.error(f"File error for {item.filename}: {e}")
+        
         self.progress_updated.emit(item.download_id, item.__dict__)
+
+    def cancel_download(self, download_id: str):
+        """Cancels a download."""
+        if download_id in self.downloads:
+            item = self.downloads[download_id]
+            item.cancelled = True
+            if item.status == DownloadStatus.QUEUED:
+                 item.status = DownloadStatus.CANCELLED
+                 self.progress_updated.emit(download_id, item.__dict__)
 
     def get_queue(self) -> List[DownloadItem]:
         return list(self.downloads.values())
@@ -607,8 +625,8 @@ class DownloadQueueWidget(QGroupBox):
 
     def init_ui(self):
         layout = QVBoxLayout(self)
-        self.downloads_table = QTableWidget(); self.downloads_table.setColumnCount(5)
-        self.downloads_table.setHorizontalHeaderLabels(["Filename", "Size", "Status", "Progress", "Speed"])
+        self.downloads_table = QTableWidget(); self.downloads_table.setColumnCount(6)
+        self.downloads_table.setHorizontalHeaderLabels(["Filename", "Size", "Status", "Progress", "Speed", "Action"])
         self.downloads_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         self.downloads_table.setEditTriggers(QTableWidget.NoEditTriggers); self.downloads_table.setSelectionBehavior(QTableWidget.SelectRows); self.downloads_table.setSortingEnabled(True)
         layout.addWidget(self.downloads_table)
@@ -627,6 +645,15 @@ class DownloadQueueWidget(QGroupBox):
         progress_bar = QProgressBar(); progress_bar.setValue(int(item.progress)); progress_bar.setTextVisible(True); self.downloads_table.setCellWidget(row, 3, progress_bar)
         speed_str = f"{item.speed/1024**2:.2f} MB/s" if item.speed > 0 else "N/A"
         self.downloads_table.setItem(row, 4, QTableWidgetItem(speed_str))
+        
+        stop_btn = QPushButton("Stop")
+        stop_btn.setStyleSheet("background-color: #d9534f; color: white; border: none; padding: 5px; border-radius: 4px;")
+        stop_btn.clicked.connect(lambda _, did=item.download_id: self.download_manager.cancel_download(did))
+        if item.status in [DownloadStatus.COMPLETED, DownloadStatus.FAILED, DownloadStatus.CANCELLED]:
+            stop_btn.setEnabled(False)
+            stop_btn.setStyleSheet("background-color: #cccccc; color: grey; border: none; padding: 5px; border-radius: 4px;")
+            
+        self.downloads_table.setCellWidget(row, 5, stop_btn)
 
     @pyqtSlot(str, dict)
     def update_download_item(self, download_id, progress_dict):
@@ -634,6 +661,11 @@ class DownloadQueueWidget(QGroupBox):
         try:
             # A more robust way to find the row
             row = next(i for i, item in enumerate(queue) if item.download_id == download_id)
+            
+            # Ensure table has enough rows
+            if row >= self.downloads_table.rowCount():
+                self.downloads_table.setRowCount(len(queue))
+                
             item = DownloadItem(**progress_dict)
             self.add_or_update_row(row, item)
         except StopIteration: # Item not in table yet
