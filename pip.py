@@ -698,6 +698,12 @@ class DownloadQueueWidget(QGroupBox):
 
     def init_ui(self):
         layout = QVBoxLayout(self)
+        
+        # Stats Label
+        self.stats_label = QLabel("Total: 0 | In Progress: 0 | Completed: 0 | Failed: 0")
+        self.stats_label.setStyleSheet("font-weight: bold; margin-bottom: 5px;")
+        layout.addWidget(self.stats_label)
+        
         self.downloads_table = QTableWidget(); self.downloads_table.setColumnCount(6)
         self.downloads_table.setHorizontalHeaderLabels(["Filename", "Size", "Status", "Progress", "Speed", "Action"])
         self.downloads_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
@@ -709,6 +715,16 @@ class DownloadQueueWidget(QGroupBox):
         queue = self.download_manager.get_queue()
         self.downloads_table.setRowCount(len(queue))
         for row, item in enumerate(queue): self.add_or_update_row(row, item)
+        self.update_stats()
+
+    def update_stats(self):
+        queue = self.download_manager.get_queue()
+        total = len(queue)
+        in_progress = sum(1 for item in queue if item.status in [DownloadStatus.QUEUED, DownloadStatus.DOWNLOADING])
+        completed = sum(1 for item in queue if item.status == DownloadStatus.COMPLETED)
+        failed = sum(1 for item in queue if item.status in [DownloadStatus.FAILED, DownloadStatus.CANCELLED])
+        
+        self.stats_label.setText(f"Total: {total} | ⏳ In Progress: {in_progress} | ✅ Completed: {completed} | ❌ Failed/Cancelled: {failed}")
 
     def add_or_update_row(self, row, item):
         self.downloads_table.setItem(row, 0, QTableWidgetItem(item.filename))
@@ -741,6 +757,7 @@ class DownloadQueueWidget(QGroupBox):
                 
             item = DownloadItem(**progress_dict)
             self.add_or_update_row(row, item)
+            self.update_stats()
         except StopIteration: # Item not in table yet
             self.populate_downloads()
 
