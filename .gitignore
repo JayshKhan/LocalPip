@@ -2,3 +2,15 @@ packages.db
 __pycache__/
 *.pyc
 CLAUDE.md
+
+# PyInstaller
+build/
+dist/
+*.spec
+
+# Config (user-specific)
+config.json
+
+# OS junk
+.DS_Store
+Thumbs.db

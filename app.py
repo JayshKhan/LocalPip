@@ -24,7 +24,7 @@ from PyQt5.QtGui import (
 )
 from packaging.requirements import Requirement
 
-from pip import (
+from core import (
     PackageInfo, DownloadItem, DownloadStatus, StagedPackage,
     PackageFoundEvent, PackageNotFoundEvent, PackageStagedEvent,
     QueueDownloadEvent, StatusUpdateEvent,
