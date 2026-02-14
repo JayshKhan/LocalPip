@@ -6,15 +6,17 @@
         "verify_ssl": true
     },
     "ui": {
-        "theme": "System",
+        "theme": "Light",
         "window_size": {
-            "width": 3840,
-            "height": 2005
+            "width": 1512,
+            "height": 831
         }
     },
     "download": {
         "default_path": "/home/internet/downloaded_wheels",
         "include_dependencies": true,
-        "verify_checksums": true
+        "verify_checksums": true,
+        "python_version": "3.11",
+        "platform": "any"
     }
 }
