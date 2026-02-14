@@ -3,18 +3,11 @@
 import os
 import json
 import pytest
-from PyQt5.QtWidgets import QApplication
 
 from core import PackageInfo
 
-
-@pytest.fixture(scope="session")
-def qapp():
-    """Session-scoped QApplication (required by PyQt5 tests)."""
-    app = QApplication.instance()
-    if app is None:
-        app = QApplication([])
-    yield app
+# Use pytest-qt's built-in qapp fixture (no custom override needed).
+# It handles QApplication lifecycle correctly across all platforms.
 
 
 @pytest.fixture
