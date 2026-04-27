@@ -142,10 +142,15 @@ jobs:
           name: ${{ matrix.artifact }}
           path: dist/LocalPip
 
+  # PyPI publish is opt-in via the repo variable PUBLISH_TO_PYPI=true.
+  # Requires a Trusted Publisher to be configured at:
+  #   https://pypi.org/manage/account/publishing/
+  # for project=localpip, owner=JayshKhan, repo=LocalPip,
+  # workflow=build.yml, environment=pypi.
   publish-pypi:
     name: Publish to PyPI
     needs: [test-cli, test-gui]
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: startsWith(github.ref, 'refs/tags/v') && vars.PUBLISH_TO_PYPI == 'true'
     runs-on: ubuntu-latest
     environment: pypi
     permissions:
