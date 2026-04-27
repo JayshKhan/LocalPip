@@ -122,8 +122,14 @@ class TestConfigurePageSettings:
         page.python_combo.setCurrentText("3.12")
         page.platform_combo.setCurrentText("win_amd64")
         page.include_deps.setChecked(False)
-        page.mirror_edit.setText("https://custom.mirror/simple/")
         page.output_edit.setText("/tmp/test-output")
+
+        # Clear existing mirrors and add a custom one
+        while page.mirrors_layout.count():
+            item = page.mirrors_layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+        page._add_mirror_row("https://custom.mirror/simple/")
 
         page.save_settings()
 
@@ -131,5 +137,5 @@ class TestConfigurePageSettings:
         assert cm.get("download.python_version") == "3.12"
         assert cm.get("download.platform") == "win_amd64"
         assert cm.get("download.include_dependencies") is False
-        assert cm.get("network.pypi_mirror") == "https://custom.mirror/simple/"
+        assert cm.get("network.pypi_mirrors") == ["https://custom.mirror/simple/"]
         assert cm.get("download.default_path") == "/tmp/test-output"

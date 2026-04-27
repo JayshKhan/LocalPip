@@ -45,6 +45,41 @@ else:
     FONT_FALLBACK = "sans-serif"
 
 
+# ── Package-specific Mirrors ──────────────────────────────────────
+
+# Exact package name -> extra index URL
+PACKAGE_MIRRORS = {
+    "torch": "https://download.pytorch.org/whl/",
+    "torchvision": "https://download.pytorch.org/whl/",
+    "torchaudio": "https://download.pytorch.org/whl/",
+    "triton": "https://download.pytorch.org/whl/",
+}
+
+# Prefix patterns: any package name starting with these gets the mirror
+PACKAGE_MIRROR_PREFIXES = {
+    "nvidia-": "https://download.pytorch.org/whl/",
+    "nvidia_": "https://download.pytorch.org/whl/",
+    "cuda-": "https://download.pytorch.org/whl/",
+}
+
+
+def get_mirror_for_package(pkg_name: str):
+    """Return the extra mirror URL for a package, or None."""
+    name = pkg_name.lower().replace("-", "_")
+    # Exact match first
+    if name in PACKAGE_MIRRORS:
+        return PACKAGE_MIRRORS[name]
+    # Also try with dashes (PyPI normalizes both ways)
+    dashed = name.replace("_", "-")
+    if dashed in PACKAGE_MIRRORS:
+        return PACKAGE_MIRRORS[dashed]
+    # Prefix match
+    for prefix, url in PACKAGE_MIRROR_PREFIXES.items():
+        if dashed.startswith(prefix) or name.startswith(prefix.replace("-", "_")):
+            return url
+    return None
+
+
 # ── Helpers ───────────────────────────────────────────────────────────
 
 def format_bytes(b):
@@ -989,9 +1024,8 @@ class SidebarWidget(QFrame):
 # ── Page 1: Configure ────────────────────────────────────────────────
 
 class ConfigurePage(QScrollArea):
-    """Target environment, output directory, network, and theme settings."""
+    """Target environment, output directory, and network settings."""
     continue_clicked = pyqtSignal()
-    theme_changed = pyqtSignal(str)
 
     def __init__(self, config_manager, parent=None):
         super().__init__(parent)
@@ -1063,30 +1097,29 @@ class ConfigurePage(QScrollArea):
         oc.addWidget(self.whl_count)
         layout.addWidget(out_card)
 
-        # ── Card 3: Network & Appearance ──
+        # ── Card 3: Network ──
         net_card = QFrame()
         net_card.setProperty("class", "card")
         nc = QVBoxLayout(net_card)
         nc.setSpacing(12)
-        net_title = QLabel("Network & Appearance")
+        net_title = QLabel("Network")
         net_title.setProperty("class", "section-title")
         nc.addWidget(net_title)
 
-        mirror_row = QHBoxLayout()
-        mirror_row.addWidget(QLabel("PyPI Mirror"))
-        self.mirror_edit = QLineEdit()
-        self.mirror_edit.setPlaceholderText("https://pypi.org/simple/")
-        mirror_row.addWidget(self.mirror_edit)
-        nc.addLayout(mirror_row)
+        mirrors_label = QLabel("PyPI Mirrors")
+        nc.addWidget(mirrors_label)
 
-        theme_row = QHBoxLayout()
-        theme_row.addWidget(QLabel("Theme"))
-        self.theme_combo = QComboBox()
-        self.theme_combo.addItems(list(THEMES.keys()))
-        self.theme_combo.currentTextChanged.connect(self.theme_changed.emit)
-        theme_row.addWidget(self.theme_combo)
-        theme_row.addStretch()
-        nc.addLayout(theme_row)
+        self.mirrors_container = QWidget()
+        self.mirrors_layout = QVBoxLayout(self.mirrors_container)
+        self.mirrors_layout.setContentsMargins(0, 0, 0, 0)
+        self.mirrors_layout.setSpacing(6)
+        nc.addWidget(self.mirrors_container)
+
+        add_mirror_btn = QPushButton("+ Add Mirror")
+        add_mirror_btn.setProperty("class", "secondary")
+        add_mirror_btn.setCursor(Qt.PointingHandCursor)
+        add_mirror_btn.clicked.connect(lambda: self._add_mirror_row(""))
+        nc.addWidget(add_mirror_btn, alignment=Qt.AlignLeft)
         layout.addWidget(net_card)
 
         layout.addStretch()
@@ -1104,9 +1137,53 @@ class ConfigurePage(QScrollArea):
         self.setWidget(container)
         self._load_settings()
 
+    def _add_mirror_row(self, url: str):
+        row = QHBoxLayout()
+        edit = QLineEdit(url)
+        edit.setPlaceholderText("https://pypi.org/simple/")
+        row.addWidget(edit)
+        remove_btn = QPushButton("\u00d7")
+        remove_btn.setProperty("class", "icon-btn")
+        remove_btn.setFixedSize(28, 28)
+        remove_btn.setCursor(Qt.PointingHandCursor)
+
+        container = QWidget()
+        container.setLayout(row)
+        remove_btn.clicked.connect(lambda: self._remove_mirror_row(container))
+        row.addWidget(remove_btn)
+        self.mirrors_layout.addWidget(container)
+
+    def _remove_mirror_row(self, container):
+        # Don't remove if it's the last mirror
+        if self.mirrors_layout.count() <= 1:
+            return
+        container.deleteLater()
+
+    def get_mirrors(self) -> list:
+        mirrors = []
+        for i in range(self.mirrors_layout.count()):
+            item = self.mirrors_layout.itemAt(i)
+            if item and item.widget():
+                edit = item.widget().findChild(QLineEdit)
+                if edit and edit.text().strip():
+                    mirrors.append(edit.text().strip())
+        return mirrors if mirrors else ["https://pypi.org/simple/"]
+
     def _load_settings(self):
         self.output_edit.setText(self.config.get("download.default_path", ""))
-        self.mirror_edit.setText(self.config.get("network.pypi_mirror", "https://pypi.org/simple/"))
+
+        # Load mirrors (backward compat: single string -> list)
+        mirrors = self.config.get("network.pypi_mirrors")
+        if mirrors is None:
+            old_mirror = self.config.get("network.pypi_mirror", "https://pypi.org/simple/")
+            mirrors = [old_mirror] if old_mirror else ["https://pypi.org/simple/"]
+        # Clear existing mirror rows
+        while self.mirrors_layout.count():
+            item = self.mirrors_layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+        for url in mirrors:
+            self._add_mirror_row(url)
 
         py_ver = self.config.get("download.python_version", "3.11")
         idx = self.python_combo.findText(py_ver)
@@ -1121,20 +1198,14 @@ class ConfigurePage(QScrollArea):
         inc = self.config.get("download.include_dependencies", True)
         self.include_deps.setChecked(inc)
 
-        theme = self.config.get("ui.theme", "Light")
-        idx = self.theme_combo.findText(theme)
-        if idx >= 0:
-            self.theme_combo.setCurrentIndex(idx)
-
         self._update_whl_count()
 
     def save_settings(self):
         self.config.set("download.default_path", self.output_edit.text())
-        self.config.set("network.pypi_mirror", self.mirror_edit.text())
+        self.config.set("network.pypi_mirrors", self.get_mirrors())
         self.config.set("download.python_version", self.python_combo.currentText())
         self.config.set("download.platform", self.platform_combo.currentText())
         self.config.set("download.include_dependencies", self.include_deps.isChecked())
-        self.config.set("ui.theme", self.theme_combo.currentText())
 
     def _browse(self):
         path = QFileDialog.getExistingDirectory(self, "Select Output Directory", self.output_edit.text())
@@ -1193,6 +1264,32 @@ class SearchPage(QWidget):
         self.drop_zone = DropZone()
         layout.addWidget(self.drop_zone)
 
+        # Extra Index URLs section
+        self.extra_mirrors_card = QFrame()
+        self.extra_mirrors_card.setProperty("class", "card")
+        emc = QVBoxLayout(self.extra_mirrors_card)
+        emc.setSpacing(8)
+        em_header = QHBoxLayout()
+        em_title = QLabel("Extra Index URLs")
+        em_title.setProperty("class", "section-label")
+        em_header.addWidget(em_title)
+        em_header.addStretch()
+        add_extra_btn = QPushButton("+ Add URL")
+        add_extra_btn.setProperty("class", "icon-btn")
+        add_extra_btn.setCursor(Qt.PointingHandCursor)
+        add_extra_btn.clicked.connect(lambda: self._add_extra_mirror(""))
+        em_header.addWidget(add_extra_btn)
+        emc.addLayout(em_header)
+
+        self.extra_mirrors_container = QWidget()
+        self.extra_mirrors_layout = QVBoxLayout(self.extra_mirrors_container)
+        self.extra_mirrors_layout.setContentsMargins(0, 0, 0, 0)
+        self.extra_mirrors_layout.setSpacing(4)
+        emc.addWidget(self.extra_mirrors_container)
+
+        self.extra_mirrors_card.hide()
+        layout.addWidget(self.extra_mirrors_card)
+
         # Scrollable content
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
@@ -1239,6 +1336,51 @@ class SearchPage(QWidget):
         self.download_btn.clicked.connect(self.download_all_clicked.emit)
         btn_row.addWidget(self.download_btn)
         layout.addLayout(btn_row)
+
+    def _add_extra_mirror(self, url: str, hint: str = ""):
+        row = QHBoxLayout()
+        edit = QLineEdit(url)
+        edit.setPlaceholderText("https://example.org/whl/")
+        row.addWidget(edit)
+        if hint:
+            hint_label = QLabel(hint)
+            hint_label.setProperty("class", "hint")
+            row.addWidget(hint_label)
+        remove_btn = QPushButton("\u00d7")
+        remove_btn.setProperty("class", "icon-btn")
+        remove_btn.setFixedSize(24, 24)
+        remove_btn.setCursor(Qt.PointingHandCursor)
+        container = QWidget()
+        container.setLayout(row)
+        remove_btn.clicked.connect(lambda: self._remove_extra_mirror(container))
+        row.addWidget(remove_btn)
+        self.extra_mirrors_layout.addWidget(container)
+        self.extra_mirrors_card.show()
+
+    def _remove_extra_mirror(self, container):
+        container.deleteLater()
+        # Hide card if no mirrors remain (check after deletion processes)
+        if self.extra_mirrors_layout.count() <= 1:
+            self.extra_mirrors_card.hide()
+
+    def has_extra_mirror(self, url: str) -> bool:
+        for i in range(self.extra_mirrors_layout.count()):
+            item = self.extra_mirrors_layout.itemAt(i)
+            if item and item.widget():
+                edit = item.widget().findChild(QLineEdit)
+                if edit and edit.text().strip() == url.strip():
+                    return True
+        return False
+
+    def get_extra_mirrors(self) -> list:
+        mirrors = []
+        for i in range(self.extra_mirrors_layout.count()):
+            item = self.extra_mirrors_layout.itemAt(i)
+            if item and item.widget():
+                edit = item.widget().findChild(QLineEdit)
+                if edit and edit.text().strip():
+                    mirrors.append(edit.text().strip())
+        return mirrors
 
     def show_package(self, package_info):
         self.package_card.set_package(package_info)
@@ -1606,6 +1748,18 @@ class MainWindow(QMainWindow):
         self.stack.addWidget(self.transfer_page)
         main_layout.addWidget(self.stack, 1)
 
+        # Theme combo — floats top-right over page content
+        self.theme_combo = QComboBox(self.stack)
+        self.theme_combo.addItems(list(THEMES.keys()))
+        self.theme_combo.setFixedWidth(100)
+        current_theme = self.config_manager.get("ui.theme", "Light")
+        idx = self.theme_combo.findText(current_theme)
+        if idx >= 0:
+            self.theme_combo.setCurrentIndex(idx)
+        self.theme_combo.raise_()
+        self._position_theme_combo()
+        self.stack.installEventFilter(self)
+
         # Status bar
         self.status_bar = self.statusBar()
         self.status_bar.showMessage("Ready")
@@ -1619,7 +1773,9 @@ class MainWindow(QMainWindow):
 
         # Configure page
         self.configure_page.continue_clicked.connect(lambda: self._go_to_page(1))
-        self.configure_page.theme_changed.connect(self._apply_theme)
+
+        # Theme selector (in header bar)
+        self.theme_combo.currentTextChanged.connect(self._apply_theme)
 
         # Search page
         self.search_page.search_btn.clicked.connect(self._on_search)
@@ -1668,6 +1824,18 @@ class MainWindow(QMainWindow):
         query = self.search_page.search_bar.text().strip()
         if not query:
             return
+
+        # Auto-add package-specific mirrors
+        try:
+            pkg_name = Requirement(query).name.lower()
+        except Exception:
+            pkg_name = query.lower()
+        mirror_url = get_mirror_for_package(pkg_name)
+        if mirror_url and not self.search_page.has_extra_mirror(mirror_url):
+            self.search_page._add_extra_mirror(
+                mirror_url, f"Auto-added for {pkg_name}"
+            )
+
         self.search_page.search_btn.setEnabled(False)
         self.search_page.set_resolution_status(f"Searching for {query}...")
         self.status_bar.showMessage(f"Searching for '{query}'...")
@@ -1675,10 +1843,19 @@ class MainWindow(QMainWindow):
         worker = Worker(self._search_work, query)
         self.search_engine.threadpool.start(worker)
 
+    def _get_all_mirrors(self) -> list:
+        """Combine configured mirrors with search page extra mirrors."""
+        mirrors = self.configure_page.get_mirrors()
+        extra = self.search_page.get_extra_mirrors()
+        for url in extra:
+            if url not in mirrors:
+                mirrors.append(url)
+        return mirrors
+
     def _search_work(self, query):
         """Worker thread: fetch package details for display."""
-        pypi_mirror = self.config_manager.get("network.pypi_mirror", "https://pypi.org/simple/")
-        pkg = self.search_engine.get_package_details(query, pypi_mirror)
+        mirrors = self._get_all_mirrors()
+        pkg = self.search_engine.get_package_details(query, mirrors)
         if pkg:
             QApplication.instance().postEvent(self, PackageFoundEvent(pkg))
         else:
@@ -1736,19 +1913,29 @@ class MainWindow(QMainWindow):
         env = {
             'python_version': '.'.join(py_ver.split('.')[:2]),
             'python_full_version': py_ver,
+            'implementation_name': 'cpython',
         }
         if 'win' in platform:
             env['sys_platform'] = 'win32'
             env['os_name'] = 'nt'
+            env['platform_system'] = 'Windows'
+            env['platform_machine'] = 'AMD64'
+        elif 'x86_64' in platform or 'amd64' in platform.lower():
+            env['sys_platform'] = 'linux'
+            env['os_name'] = 'posix'
+            env['platform_system'] = 'Linux'
+            env['platform_machine'] = 'x86_64'
         else:
             env['sys_platform'] = 'linux'
             env['os_name'] = 'posix'
+            env['platform_system'] = 'Linux'
+            env['platform_machine'] = 'x86_64'
         return env
 
     def _resolve_work(self, initial_packages: List[str]):
         """Worker thread: recursively resolve packages and post staging events."""
         packages_to_process = list(initial_packages)
-        pypi_mirror = self.config_manager.get("network.pypi_mirror", "https://pypi.org/simple/")
+        mirrors = self._get_all_mirrors()
         environment = self._get_evaluation_environment()
         include_deps = self.configure_page.include_deps.isChecked()
         is_first = True
@@ -1760,11 +1947,16 @@ class MainWindow(QMainWindow):
             if normalized in self.processed_packages:
                 continue
 
+            # Auto-add package-specific mirrors during resolution
+            extra_mirror = get_mirror_for_package(normalized)
+            if extra_mirror and extra_mirror not in mirrors:
+                mirrors.append(extra_mirror)
+
             QApplication.instance().postEvent(
                 self, StatusUpdateEvent(f"Resolving {package_name}...")
             )
 
-            pkg = self.search_engine.get_package_details(package_name, pypi_mirror)
+            pkg = self.search_engine.get_package_details(package_name, mirrors)
             if pkg:
                 self.processed_packages.add(normalized)
                 is_dep = not is_first and normalized not in {
@@ -1888,6 +2080,18 @@ class MainWindow(QMainWindow):
         self._go_to_page(1)
 
     # ── Window lifecycle ──
+
+    def _position_theme_combo(self):
+        margin = 16
+        self.theme_combo.move(
+            self.stack.width() - self.theme_combo.width() - margin,
+            margin,
+        )
+
+    def eventFilter(self, obj, event):
+        if obj is self.stack and event.type() == QEvent.Resize:
+            self._position_theme_combo()
+        return super().eventFilter(obj, event)
 
     def closeEvent(self, event):
         self.configure_page.save_settings()

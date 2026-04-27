@@ -6,7 +6,7 @@ import pytest
 from core import SearchEngine
 
 
-PYPI_MIRROR = "https://pypi.org/simple/"
+PYPI_MIRRORS = ["https://pypi.org/simple/"]
 
 
 class TestGetPackageDetails:
@@ -21,7 +21,7 @@ class TestGetPackageDetails:
         )
 
         se = SearchEngine(tmp_db)
-        pkg = se.get_package_details("requests", PYPI_MIRROR)
+        pkg = se.get_package_details("requests", PYPI_MIRRORS)
 
         assert pkg is not None
         assert pkg.name == "requests"
@@ -66,7 +66,7 @@ class TestGetPackageDetails:
         responses.add(responses.GET, "https://pypi.org/pypi/requests/2.31.0/json", json=v_body, status=200)
 
         se = SearchEngine(tmp_db)
-        pkg = se.get_package_details("requests>=2.0,<3.0", PYPI_MIRROR)
+        pkg = se.get_package_details("requests>=2.0,<3.0", PYPI_MIRRORS)
 
         assert pkg is not None
         assert pkg.version == "2.31.0"
@@ -81,7 +81,7 @@ class TestGetPackageDetails:
         )
 
         se = SearchEngine(tmp_db)
-        pkg = se.get_package_details("nonexistent-pkg-xyz", PYPI_MIRROR)
+        pkg = se.get_package_details("nonexistent-pkg-xyz", PYPI_MIRRORS)
         assert pkg is None
 
     @responses.activate
@@ -94,7 +94,7 @@ class TestGetPackageDetails:
         )
 
         se = SearchEngine(tmp_db)
-        pkg = se.get_package_details("requests", PYPI_MIRROR)
+        pkg = se.get_package_details("requests", PYPI_MIRRORS)
         assert pkg is None
 
     @responses.activate
@@ -112,7 +112,7 @@ class TestGetPackageDetails:
         responses.add(responses.GET, "https://pypi.org/pypi/requests/json", json=body, status=200)
 
         se = SearchEngine(tmp_db)
-        pkg = se.get_package_details("requests>=99.0", PYPI_MIRROR)
+        pkg = se.get_package_details("requests>=99.0", PYPI_MIRRORS)
         assert pkg is None
 
 

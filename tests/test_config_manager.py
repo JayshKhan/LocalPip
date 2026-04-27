@@ -53,16 +53,26 @@ class TestConfigManagerLoadSave:
 
     def test_load_merges_missing_defaults(self, tmp_config):
         """If a saved config is missing a key that exists in DEFAULT, it's filled in."""
-        partial = {"network": {"pypi_mirror": "https://custom.org/simple/"}}
+        partial = {"network": {"pypi_mirrors": ["https://custom.org/simple/"]}}
         with open(tmp_config, "w") as f:
             json.dump(partial, f)
 
         cm = ConfigManager(tmp_config)
         # Preserved from file
-        assert cm.get("network.pypi_mirror") == "https://custom.org/simple/"
+        assert cm.get("network.pypi_mirrors") == ["https://custom.org/simple/"]
         # Filled from defaults
         assert cm.get("network.timeout") == 30
         assert cm.get("ui.theme") == "Light"
+
+    def test_load_migrates_old_pypi_mirror_to_list(self, tmp_config):
+        """Old pypi_mirror (string) is migrated to pypi_mirrors (list)."""
+        partial = {"network": {"pypi_mirror": "https://legacy.org/simple/"}}
+        with open(tmp_config, "w") as f:
+            json.dump(partial, f)
+
+        cm = ConfigManager(tmp_config)
+        assert cm.get("network.pypi_mirrors") == ["https://legacy.org/simple/"]
+        assert cm.get("network.pypi_mirror") is None
 
     def test_corrupt_json_falls_back_to_defaults(self, tmp_config):
         with open(tmp_config, "w") as f:

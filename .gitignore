@@ -8,8 +8,21 @@ build/
 dist/
 *.spec
 
+# Packaging
+*.egg-info/
+.eggs/
+wheels/
+
 # Config (user-specific)
 config.json
+
+# Local pip-freeze snapshots (user-specific)
+requirement-frozen.txt
+
+# Coverage
+.coverage
+.coverage.*
+htmlcov/
 
 # OS junk
 .DS_Store

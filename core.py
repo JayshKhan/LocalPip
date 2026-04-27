@@ -169,48 +169,54 @@ class SearchEngine:
             logging.error(f"Failed to search packages: {e}")
         return []
 
-    def get_package_details(self, package_name_input: str, pypi_mirror: str) -> Optional[PackageInfo]:
-        try:
-            req = Requirement(package_name_input)
-            package_name = req.name
+    def get_package_details(self, package_name_input: str, pypi_mirrors: List[str]) -> Optional[PackageInfo]:
+        if isinstance(pypi_mirrors, str):
+            pypi_mirrors = [pypi_mirrors]
 
-            url = urljoin(pypi_mirror.replace('/simple/', '/pypi/'), f"{package_name}/json")
-            response = requests.get(url, timeout=10)
-            response.raise_for_status()
-            data = response.json()
+        for pypi_mirror in pypi_mirrors:
+            try:
+                req = Requirement(package_name_input)
+                package_name = req.name
 
-            if req.specifier:
-                releases = data.get('releases', {}).keys()
-                matching = list(req.specifier.filter(releases))
-                if not matching:
-                    logging.warning(f"No versions of {package_name} match {req.specifier}")
-                    return None
-                matching.sort(key=parse_version)
-                target_version = matching[-1]
-                if target_version != data.get('info', {}).get('version'):
-                    v_url = urljoin(
-                        pypi_mirror.replace('/simple/', '/pypi/'),
-                        f"{package_name}/{target_version}/json"
-                    )
-                    data = requests.get(v_url, timeout=10).json()
+                url = urljoin(pypi_mirror.replace('/simple/', '/pypi/'), f"{package_name}/json")
+                response = requests.get(url, timeout=10)
+                response.raise_for_status()
+                data = response.json()
 
-            info = data.get('info', {})
-            version = info.get('version')
-            return PackageInfo(
-                name=info.get('name'),
-                version=version,
-                description=info.get('summary'),
-                author=info.get('author'),
-                license=info.get('license'),
-                dependencies=info.get('requires_dist', []) or [],
-                urls=data.get('releases', {}).get(version, [])
-            )
-        except requests.RequestException as e:
-            logging.error(f"Failed to get package details for {package_name_input}: {e}")
-            return None
-        except Exception as e:
-            logging.error(f"Error processing {package_name_input}: {e}")
-            return None
+                if req.specifier:
+                    releases = data.get('releases', {}).keys()
+                    matching = list(req.specifier.filter(releases))
+                    if not matching:
+                        logging.warning(f"No versions of {package_name} match {req.specifier}")
+                        continue
+                    matching.sort(key=parse_version)
+                    target_version = matching[-1]
+                    if target_version != data.get('info', {}).get('version'):
+                        v_url = urljoin(
+                            pypi_mirror.replace('/simple/', '/pypi/'),
+                            f"{package_name}/{target_version}/json"
+                        )
+                        data = requests.get(v_url, timeout=10).json()
+
+                info = data.get('info', {})
+                version = info.get('version')
+                return PackageInfo(
+                    name=info.get('name'),
+                    version=version,
+                    description=info.get('summary'),
+                    author=info.get('author'),
+                    license=info.get('license'),
+                    dependencies=info.get('requires_dist', []) or [],
+                    urls=data.get('releases', {}).get(version, [])
+                )
+            except requests.RequestException as e:
+                logging.error(f"Failed to get package details for {package_name_input} from {pypi_mirror}: {e}")
+                continue
+            except Exception as e:
+                logging.error(f"Error processing {package_name_input}: {e}")
+                continue
+
+        return None
 
 
 # ── Download Manager ──────────────────────────────────────────────────
@@ -380,7 +386,7 @@ class ConfigManager:
 
     DEFAULT = {
         "network": {
-            "pypi_mirror": "https://pypi.org/simple/",
+            "pypi_mirrors": ["https://pypi.org/simple/"],
             "timeout": 30,
             "max_concurrent": 5
         },
@@ -406,6 +412,12 @@ class ConfigManager:
             try:
                 with open(self.config_path, 'r') as f:
                     loaded = json.load(f)
+                # Migrate old pypi_mirror (string) to pypi_mirrors (list)
+                network = loaded.get("network", {})
+                if "pypi_mirror" in network and "pypi_mirrors" not in network:
+                    network["pypi_mirrors"] = [network.pop("pypi_mirror")]
+                elif "pypi_mirror" in network and "pypi_mirrors" in network:
+                    del network["pypi_mirror"]
                 for key in default:
                     if key not in loaded:
                         loaded[key] = default[key]
