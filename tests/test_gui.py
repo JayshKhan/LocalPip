@@ -1,69 +1,54 @@
-"""Tests for UI workflows: themes, navigation, staging, settings persistence."""
+"""GUI workflow tests. Skipped if PyQt5 (or pytest-qt) is not installed."""
 
+from __future__ import annotations
+
+import os
 import pytest
-from PyQt5.QtWidgets import QApplication
 
-from app import (
-    MainWindow, generate_stylesheet, THEMES, set_theme, get_theme,
-    ConfigurePage, SearchPage,
+PyQt5 = pytest.importorskip("PyQt5")
+pytest.importorskip("pytestqt")  # provided by pytest-qt
+
+from localpip.core import ConfigManager, PackageInfo  # noqa: E402
+from localpip.gui import (  # noqa: E402
+    THEMES,
+    PackageStagedEvent,
+    generate_stylesheet,
+    get_theme,
+    set_theme,
+    MainWindow,
 )
-from core import ConfigManager, PackageInfo, PackageStagedEvent
 
 
 @pytest.fixture
 def main_window(qapp, tmp_path):
-    """Create a MainWindow with temp config and DB paths."""
     config_path = str(tmp_path / "config.json")
-    db_path = str(tmp_path / "packages.db")
-
-    # Patch the paths before construction
-    import core
-    orig_config_init = ConfigManager.__init__
-
-    def patched_config_init(self, path):
-        orig_config_init(self, config_path)
-
-    import unittest.mock as mock
-    with mock.patch.object(ConfigManager, '__init__', patched_config_init):
-        with mock.patch('app.SearchEngine') as MockSE:
-            MockSE.return_value.db_path = db_path
-            MockSE.return_value.conn = None
-            MockSE.return_value.threadpool = None
-            win = MainWindow()
-
+    win = MainWindow(config_path=config_path)
     yield win
     win.close()
 
 
-# ── Theme Tests ──
-
-class TestThemeSwitching:
+class TestThemes:
     def test_all_themes_generate_valid_stylesheet(self):
         for name, theme_dict in THEMES.items():
             ss = generate_stylesheet(theme_dict)
             assert isinstance(ss, str)
             assert len(ss) > 100
-            # Should reference theme colors
             assert theme_dict["bg_primary"] in ss
             assert theme_dict["accent"] in ss
 
     def test_set_theme_updates_current(self):
-        original = get_theme()
         set_theme("Dark")
         assert get_theme() == THEMES["Dark"]
         set_theme("Nord")
         assert get_theme() == THEMES["Nord"]
-        # Restore
-        set_theme("Light")
+        set_theme("Light")  # restore
 
     def test_invalid_theme_falls_back_to_light(self):
         set_theme("NonExistent")
         assert get_theme() == THEMES["Light"]
 
 
-# ── Page Navigation ──
-
-class TestPageNavigation:
+class TestNavigation:
     def test_sidebar_click_changes_page(self, main_window):
         main_window._go_to_page(2)
         assert main_window.stack.currentIndex() == 2
@@ -75,46 +60,26 @@ class TestPageNavigation:
         assert main_window.sidebar.steps[2].completed is False
 
 
-# ── Staging Events ──
-
-class TestStagingWorkflow:
+class TestStaging:
     def test_staged_event_adds_row(self, main_window):
-        pkg = PackageInfo(
-            name="flask", version="3.0.0", description="Web framework",
-        )
-        event = PackageStagedEvent(pkg, is_dependency=False)
-        main_window.customEvent(event)
-
+        pkg = PackageInfo(name="flask", version="3.0.0", summary="Web framework")
+        main_window.customEvent(PackageStagedEvent(pkg, is_dependency=False))
         assert "flask" in main_window.staged_packages
-        # Check the staged_list_layout has a row
-        count = main_window.search_page.staged_list_layout.count()
-        assert count >= 1
+        assert main_window.search_page.staged_list_layout.count() >= 1
 
-    def test_staged_dependency_marked(self, main_window):
-        pkg = PackageInfo(
-            name="werkzeug", version="3.0.0", description="WSGI toolkit",
-        )
-        event = PackageStagedEvent(pkg, is_dependency=True)
-        main_window.customEvent(event)
-
+    def test_dependency_marked(self, main_window):
+        pkg = PackageInfo(name="werkzeug", version="3.0.0", summary="WSGI")
+        main_window.customEvent(PackageStagedEvent(pkg, is_dependency=True))
         staged = main_window.staged_packages.get("werkzeug")
         assert staged is not None
         assert staged.is_dependency is True
 
     def test_duplicate_staging_ignored(self, main_window):
-        pkg = PackageInfo(
-            name="click", version="8.0.0", description="CLI toolkit",
-        )
-        event1 = PackageStagedEvent(pkg, is_dependency=False)
-        event2 = PackageStagedEvent(pkg, is_dependency=False)
-        main_window.customEvent(event1)
-        main_window.customEvent(event2)
-
-        # Should only appear once
+        pkg = PackageInfo(name="click", version="8.0.0", summary="CLI toolkit")
+        main_window.customEvent(PackageStagedEvent(pkg, is_dependency=False))
+        main_window.customEvent(PackageStagedEvent(pkg, is_dependency=False))
         assert len([k for k in main_window.staged_packages if k == "click"]) == 1
 
-
-# ── ConfigurePage Settings ──
 
 class TestConfigurePageSettings:
     def test_save_settings_persists_to_config(self, main_window):

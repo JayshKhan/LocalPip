@@ -1,35 +1,300 @@
-#!/usr/bin/env python3
-"""
-LocalPip - UI & Entry Point
-Beautiful multi-theme PyQt5 interface for offline Python package downloading.
-"""
+"""LocalPip GUI — PyQt5 multi-page workflow over the Qt-free core engine."""
 
-import sys
 import os
+import sys
+import threading
 import time
-from typing import Dict, List
+from dataclasses import dataclass
+from enum import Enum
+from typing import Dict, List, Optional
 
-from PyQt5.QtWidgets import (
-    QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
-    QLabel, QLineEdit, QPushButton, QComboBox, QCheckBox, QProgressBar,
-    QFrame, QScrollArea, QStackedWidget, QFileDialog, QMessageBox,
-    QSizePolicy, QLayout, QGraphicsDropShadowEffect, QStatusBar
-)
-from PyQt5.QtCore import (
-    Qt, QSize, QRect, QPoint, pyqtSignal, QEvent, QMimeData
-)
-from PyQt5.QtGui import (
-    QFont, QColor, QPainter, QPen, QBrush, QFontMetrics, QClipboard,
-    QDragEnterEvent, QDropEvent
-)
+try:
+    from PyQt5.QtWidgets import (
+        QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
+        QLabel, QLineEdit, QPushButton, QComboBox, QCheckBox, QProgressBar,
+        QFrame, QScrollArea, QStackedWidget, QFileDialog, QMessageBox,
+        QLayout
+    )
+    from PyQt5.QtCore import (
+        Qt, QSize, QRect, QPoint, pyqtSignal, QEvent, QObject, QRunnable,
+        QThreadPool, pyqtSlot,
+    )
+    from PyQt5.QtGui import (
+        QFont, QColor, QPainter, QPen, QDragEnterEvent, QDropEvent
+    )
+except ImportError as exc:
+    raise SystemExit(
+        "PyQt5 is required for the LocalPip GUI. Install with:\n"
+        "    pip install localpip[gui]\n"
+        f"  (import error: {exc})"
+    )
+
 from packaging.requirements import Requirement
 
-from core import (
-    PackageInfo, DownloadItem, DownloadStatus, StagedPackage,
-    PackageFoundEvent, PackageNotFoundEvent, PackageStagedEvent,
-    QueueDownloadEvent, StatusUpdateEvent,
-    Worker, SearchEngine, DownloadManager, ConfigManager
+from localpip.core import (
+    ConfigManager, Downloader, HTTPClient, PackageInfo, Resolver,
+    Target, select_wheel,
 )
+
+
+# ── GUI-only data classes / enums ────────────────────────────────────
+
+
+class DownloadStatus(Enum):
+    QUEUED = "Queued"
+    DOWNLOADING = "Downloading"
+    COMPLETED = "Completed"
+    FAILED = "Failed"
+    CANCELLED = "Cancelled"
+
+
+@dataclass
+class DownloadItem:
+    download_id: str
+    package_name: str
+    version: str
+    filename: str
+    url: str
+    output_path: str
+    python_version: str
+    platform: str
+    status: DownloadStatus = DownloadStatus.QUEUED
+    progress: float = 0.0
+    downloaded_bytes: int = 0
+    total_bytes: int = 0
+    speed: float = 0.0
+    eta: int = 0
+    error_message: str = ""
+    cancelled: bool = False
+
+
+@dataclass
+class StagedPackage:
+    package_info: PackageInfo
+    is_dependency: bool = False
+
+
+# ── QEvent subclasses for thread → UI communication ──────────────────
+
+
+class PackageFoundEvent(QEvent):
+    EVENT_TYPE = QEvent.Type(QEvent.User + 1)
+
+    def __init__(self, package_details):
+        super().__init__(self.EVENT_TYPE)
+        self.package_details = package_details
+
+
+class PackageNotFoundEvent(QEvent):
+    EVENT_TYPE = QEvent.Type(QEvent.User + 3)
+
+    def __init__(self, package_name):
+        super().__init__(self.EVENT_TYPE)
+        self.package_name = package_name
+
+
+class PackageStagedEvent(QEvent):
+    EVENT_TYPE = QEvent.Type(QEvent.User + 6)
+
+    def __init__(self, package_info: PackageInfo, is_dependency: bool = False):
+        super().__init__(self.EVENT_TYPE)
+        self.package_info = package_info
+        self.is_dependency = is_dependency
+
+
+class StatusUpdateEvent(QEvent):
+    EVENT_TYPE = QEvent.Type(QEvent.User + 5)
+
+    def __init__(self, message):
+        super().__init__(self.EVENT_TYPE)
+        self.message = message
+
+
+# ── Worker (generic background task) ─────────────────────────────────
+
+
+class Worker(QRunnable):
+    def __init__(self, fn, *args, **kwargs):
+        super().__init__()
+        self.fn = fn
+        self.args = args
+        self.kwargs = kwargs
+
+    @pyqtSlot()
+    def run(self):
+        self.fn(*self.args, **self.kwargs)
+
+
+# ── GUI download adapter (wraps core.Downloader, exposes Qt signals) ─
+
+
+class GuiDownloadManager(QObject):
+    progress_updated = pyqtSignal(str, dict)
+
+    def __init__(self, http: HTTPClient, max_workers: int = 5):
+        super().__init__()
+        self._downloader = Downloader(http=http, max_workers=max_workers)
+        self.downloads: Dict[str, DownloadItem] = {}
+        self._start_times: Dict[str, float] = {}
+        self._lock = threading.Lock()
+        self._active_thread: Optional[threading.Thread] = None
+
+    def reset(self):
+        with self._lock:
+            self.downloads.clear()
+            self._start_times.clear()
+        self._downloader.reset_cancellations()
+
+    def get_queue(self) -> List[DownloadItem]:
+        with self._lock:
+            return list(self.downloads.values())
+
+    def cancel_download(self, download_id: str):
+        with self._lock:
+            item = self.downloads.get(download_id)
+        if not item:
+            return
+        item.cancelled = True
+        self._downloader.cancel(item.filename)
+        if item.status == DownloadStatus.QUEUED:
+            item.status = DownloadStatus.CANCELLED
+            self.progress_updated.emit(download_id, item.__dict__)
+
+    def retry_download(self, download_id: str):
+        with self._lock:
+            item = self.downloads.get(download_id)
+        if not item or item.status not in (
+            DownloadStatus.FAILED, DownloadStatus.CANCELLED,
+        ):
+            return
+        item.status = DownloadStatus.QUEUED
+        item.progress = 0
+        item.downloaded_bytes = 0
+        item.error_message = ""
+        item.cancelled = False
+        self.progress_updated.emit(download_id, item.__dict__)
+
+    def start_batch(
+        self,
+        packages: List[PackageInfo],
+        target: Target,
+        output_dir: str,
+        verify_sha256: bool = True,
+    ):
+        for pkg in packages:
+            wheel = select_wheel(pkg.files, target)
+            if not wheel:
+                continue
+            did = f"{pkg.name}_{pkg.version}_{int(time.time() * 1000000)}"
+            item = DownloadItem(
+                download_id=did,
+                package_name=pkg.name,
+                version=pkg.version,
+                filename=wheel["filename"],
+                url=wheel["url"],
+                output_path=os.path.join(output_dir, wheel["filename"]),
+                python_version=target.python_version,
+                platform=target.platform,
+            )
+            with self._lock:
+                self.downloads[did] = item
+            self.progress_updated.emit(did, item.__dict__)
+
+        self._active_thread = threading.Thread(
+            target=self._run_batch,
+            args=(packages, target, output_dir, verify_sha256),
+            daemon=True,
+        )
+        self._active_thread.start()
+
+    def _find_item(self, filename: str) -> Optional[DownloadItem]:
+        with self._lock:
+            for item in self.downloads.values():
+                if item.filename == filename:
+                    return item
+        return None
+
+    def _on_event(self, event: str, **kw):
+        filename = kw.get("filename")
+        item = self._find_item(filename) if filename else None
+        if not item:
+            return
+        now = time.time()
+        if event == "start":
+            item.status = DownloadStatus.DOWNLOADING
+            self._start_times[item.download_id] = now
+        elif event == "progress":
+            item.downloaded_bytes = kw.get("downloaded", 0)
+            item.total_bytes = kw.get("total", 0)
+            if item.total_bytes:
+                item.progress = item.downloaded_bytes / item.total_bytes * 100
+            elapsed = now - self._start_times.get(item.download_id, now)
+            if elapsed > 0:
+                item.speed = item.downloaded_bytes / elapsed
+                if item.speed > 0 and item.total_bytes:
+                    item.eta = int(
+                        (item.total_bytes - item.downloaded_bytes) / item.speed
+                    )
+        elif event == "complete":
+            item.status = DownloadStatus.COMPLETED
+            item.progress = 100
+            item.total_bytes = kw.get("size", item.total_bytes)
+            item.downloaded_bytes = item.total_bytes
+        elif event == "skip":
+            item.status = DownloadStatus.COMPLETED
+            item.progress = 100
+            if os.path.exists(item.output_path):
+                item.total_bytes = os.path.getsize(item.output_path)
+                item.downloaded_bytes = item.total_bytes
+        elif event == "error":
+            item.status = DownloadStatus.FAILED
+            item.error_message = kw.get("message", "")
+        self.progress_updated.emit(item.download_id, item.__dict__)
+
+    def _run_batch(self, packages, target, output_dir, verify_sha256):
+        results = self._downloader.download(
+            packages, target, output_dir,
+            on_event=self._on_event, verify_sha256=verify_sha256,
+        )
+        for r in results:
+            item = self._find_item(r.filename) if r.filename else None
+            if not item:
+                continue
+            if r.error and item.status not in (
+                DownloadStatus.FAILED, DownloadStatus.CANCELLED,
+            ):
+                item.status = DownloadStatus.FAILED
+                item.error_message = r.error
+                self.progress_updated.emit(item.download_id, item.__dict__)
+            elif r.ok and item.status != DownloadStatus.COMPLETED:
+                item.status = DownloadStatus.COMPLETED
+                item.progress = 100
+                self.progress_updated.emit(item.download_id, item.__dict__)
+
+
+# ── Resolver helper used from MainWindow workers ─────────────────────
+
+
+class GuiResolver:
+    def __init__(self, http: HTTPClient, mirrors: List[str], target: Target):
+        self.http = http
+        self.target = target
+        self.mirrors = list(mirrors)
+        self.threadpool = QThreadPool()
+
+    def update(self, mirrors: List[str], target: Target):
+        self.mirrors = list(mirrors)
+        self.target = target
+
+    def get_package_details(
+        self, requirement: str, mirrors: Optional[List[str]] = None
+    ) -> Optional[PackageInfo]:
+        resolver = Resolver(
+            http=self.http,
+            mirrors=mirrors or self.mirrors,
+            target=self.target,
+        )
+        return resolver.get_package_info(requirement)
 
 
 # ── Platform Font ─────────────────────────────────────────────────────
@@ -723,7 +988,7 @@ class PackageCard(QFrame):
         self.package_info = pkg
         self.name_label.setText(pkg.name)
         self.version_label.setText(pkg.version)
-        self.desc_label.setText(pkg.description or "No description available")
+        self.desc_label.setText(pkg.summary or "No description available")
         author = pkg.author or "N/A"
         lic = pkg.license or "N/A"
         self.meta_label.setText(f"Author: {author}  |  License: {lic}")
@@ -734,10 +999,10 @@ class PackageCard(QFrame):
             if item.widget():
                 item.widget().deleteLater()
 
-        if pkg.dependencies:
+        if pkg.requires_dist:
             self.deps_label.show()
             self.deps_container.show()
-            shown = pkg.dependencies[:20]
+            shown = pkg.requires_dist[:20]
             for dep_str in shown:
                 try:
                     req = Requirement(dep_str)
@@ -746,8 +1011,8 @@ class PackageCard(QFrame):
                     self.deps_flow.addWidget(pill)
                 except Exception:
                     pass
-            if len(pkg.dependencies) > 20:
-                more = QLabel(f"+{len(pkg.dependencies) - 20} more")
+            if len(pkg.requires_dist) > 20:
+                more = QLabel(f"+{len(pkg.requires_dist) - 20} more")
                 more.setProperty("class", "pill")
                 self.deps_flow.addWidget(more)
         else:
@@ -1701,11 +1966,26 @@ class TransferPage(QScrollArea):
 class MainWindow(QMainWindow):
     """Primary application window with sidebar navigation and 4 pages."""
 
-    def __init__(self):
+    def __init__(self, config_path: str = "config.json"):
         super().__init__()
-        self.config_manager = ConfigManager("config.json")
-        self.search_engine = SearchEngine("packages.db")
-        self.download_manager = DownloadManager()
+        self.config_manager = ConfigManager(config_path)
+
+        self._http = HTTPClient(
+            timeout=self.config_manager.get("network.timeout", 30),
+            max_retries=self.config_manager.get("network.max_retries", 3),
+        )
+        initial_target = Target(
+            python_version=self.config_manager.get("download.python_version", "3.11"),
+            platform=self.config_manager.get("download.platform", "any"),
+        )
+        initial_mirrors = self.config_manager.get(
+            "network.pypi_mirrors", ["https://pypi.org/simple/"]
+        )
+        self.resolver = GuiResolver(self._http, initial_mirrors, initial_target)
+        self.download_manager = GuiDownloadManager(
+            self._http,
+            max_workers=self.config_manager.get("network.max_concurrent", 5),
+        )
 
         self.staged_packages: Dict[str, StagedPackage] = {}
         self.processed_packages: set = set()
@@ -1841,7 +2121,7 @@ class MainWindow(QMainWindow):
         self.status_bar.showMessage(f"Searching for '{query}'...")
 
         worker = Worker(self._search_work, query)
-        self.search_engine.threadpool.start(worker)
+        self.resolver.threadpool.start(worker)
 
     def _get_all_mirrors(self) -> list:
         """Combine configured mirrors with search page extra mirrors."""
@@ -1852,10 +2132,17 @@ class MainWindow(QMainWindow):
                 mirrors.append(url)
         return mirrors
 
+    def _current_target(self) -> Target:
+        return Target(
+            python_version=self.configure_page.python_combo.currentText(),
+            platform=self.configure_page.platform_combo.currentText(),
+        )
+
     def _search_work(self, query):
         """Worker thread: fetch package details for display."""
         mirrors = self._get_all_mirrors()
-        pkg = self.search_engine.get_package_details(query, mirrors)
+        self.resolver.update(mirrors, self._current_target())
+        pkg = self.resolver.get_package_details(query, mirrors)
         if pkg:
             QApplication.instance().postEvent(self, PackageFoundEvent(pkg))
         else:
@@ -1869,9 +2156,8 @@ class MainWindow(QMainWindow):
         self.search_page.set_resolution_status("Resolving dependencies...")
         self.search_page.search_btn.setEnabled(False)
 
-        # Start resolution in background
         worker = Worker(self._resolve_work, [package_info.name])
-        self.search_engine.threadpool.start(worker)
+        self.resolver.threadpool.start(worker)
 
     def _on_import(self):
         file_path, _ = QFileDialog.getOpenFileName(
@@ -1903,84 +2189,66 @@ class MainWindow(QMainWindow):
             self.status_bar.showMessage(f"Resolving {len(packages)} packages from requirements...")
 
             worker = Worker(self._resolve_work, packages)
-            self.search_engine.threadpool.start(worker)
+            self.resolver.threadpool.start(worker)
         except Exception as e:
             QMessageBox.critical(self, "Import Error", f"Failed to read file: {e}")
 
-    def _get_evaluation_environment(self) -> Dict:
-        py_ver = self.configure_page.python_combo.currentText()
-        platform = self.configure_page.platform_combo.currentText()
-        env = {
-            'python_version': '.'.join(py_ver.split('.')[:2]),
-            'python_full_version': py_ver,
-            'implementation_name': 'cpython',
-        }
-        if 'win' in platform:
-            env['sys_platform'] = 'win32'
-            env['os_name'] = 'nt'
-            env['platform_system'] = 'Windows'
-            env['platform_machine'] = 'AMD64'
-        elif 'x86_64' in platform or 'amd64' in platform.lower():
-            env['sys_platform'] = 'linux'
-            env['os_name'] = 'posix'
-            env['platform_system'] = 'Linux'
-            env['platform_machine'] = 'x86_64'
-        else:
-            env['sys_platform'] = 'linux'
-            env['os_name'] = 'posix'
-            env['platform_system'] = 'Linux'
-            env['platform_machine'] = 'x86_64'
-        return env
-
     def _resolve_work(self, initial_packages: List[str]):
-        """Worker thread: recursively resolve packages and post staging events."""
-        packages_to_process = list(initial_packages)
+        """Worker thread: drive core.Resolver, post staging events to main thread."""
         mirrors = self._get_all_mirrors()
-        environment = self._get_evaluation_environment()
-        include_deps = self.configure_page.include_deps.isChecked()
-        is_first = True
-
-        while packages_to_process:
-            package_name = packages_to_process.pop(0)
-            normalized = Requirement(package_name).name.lower()
-
-            if normalized in self.processed_packages:
+        # Auto-extend mirrors with any package-specific extras (torch, nvidia, …)
+        for name in initial_packages:
+            try:
+                normalized = Requirement(name).name.lower()
+            except Exception:
                 continue
+            extra = get_mirror_for_package(normalized)
+            if extra and extra not in mirrors:
+                mirrors.append(extra)
 
-            # Auto-add package-specific mirrors during resolution
-            extra_mirror = get_mirror_for_package(normalized)
-            if extra_mirror and extra_mirror not in mirrors:
-                mirrors.append(extra_mirror)
+        target = self._current_target()
+        self.resolver.update(mirrors, target)
+        include_deps = self.configure_page.include_deps.isChecked()
 
-            QApplication.instance().postEvent(
-                self, StatusUpdateEvent(f"Resolving {package_name}...")
+        roots = set()
+        for name in initial_packages:
+            try:
+                roots.add(Requirement(name).name.lower())
+            except Exception:
+                pass
+
+        def on_event(event, **kw):
+            if event == "resolving":
+                QApplication.instance().postEvent(
+                    self,
+                    StatusUpdateEvent(f"Resolving {kw['requirement']}..."),
+                )
+            elif event == "resolved":
+                pkg = kw["package"]
+                if pkg.name.lower() not in self.processed_packages:
+                    self.processed_packages.add(pkg.name.lower())
+                    QApplication.instance().postEvent(
+                        self,
+                        PackageStagedEvent(pkg, kw.get("is_dependency", False)),
+                    )
+            elif event == "not_found":
+                QApplication.instance().postEvent(
+                    self, PackageNotFoundEvent(kw["requirement"])
+                )
+
+        core_resolver = Resolver(self._http, mirrors, target)
+        # Skip already-processed packages by reusing seen set semantics
+        already = list(self.processed_packages)
+        try:
+            core_resolver.resolve(
+                [p for p in initial_packages if Requirement(p).name.lower() not in already],
+                include_deps=include_deps,
+                on_event=on_event,
             )
-
-            pkg = self.search_engine.get_package_details(package_name, mirrors)
-            if pkg:
-                self.processed_packages.add(normalized)
-                is_dep = not is_first and normalized not in {
-                    Requirement(p).name.lower() for p in initial_packages
-                }
-                is_first = False
-                QApplication.instance().postEvent(
-                    self, PackageStagedEvent(pkg, is_dep)
-                )
-
-                if include_deps and pkg.dependencies:
-                    for dep_string in pkg.dependencies:
-                        try:
-                            req = Requirement(dep_string)
-                            if req.marker and not req.marker.evaluate(environment=environment):
-                                continue
-                            if req.name.lower() not in self.processed_packages:
-                                packages_to_process.append(req.name)
-                        except Exception:
-                            pass
-            else:
-                QApplication.instance().postEvent(
-                    self, PackageNotFoundEvent(package_name)
-                )
+        except Exception as e:
+            QApplication.instance().postEvent(
+                self, StatusUpdateEvent(f"Resolution error: {e}")
+            )
 
         QApplication.instance().postEvent(
             self, StatusUpdateEvent("Resolution complete.")
@@ -2041,18 +2309,17 @@ class MainWindow(QMainWindow):
             return
         os.makedirs(output_dir, exist_ok=True)
 
-        py_ver = self.configure_page.python_combo.currentText()
-        platform = self.configure_page.platform_combo.currentText()
+        target = self._current_target()
+        verify = self.config_manager.get("download.verify_checksums", True)
 
         # Reset downloads page
         self.downloads_page.reset()
         self.download_manager.reset()
 
-        # Queue all staged packages
-        for staged in self.staged_packages.values():
-            self.download_manager.add_to_queue(
-                staged.package_info, py_ver, platform, output_dir
-            )
+        packages = [staged.package_info for staged in self.staged_packages.values()]
+        self.download_manager.start_batch(
+            packages, target, output_dir, verify_sha256=verify,
+        )
 
         self._go_to_page(2)
         self.status_bar.showMessage("Downloading...")
@@ -2103,26 +2370,28 @@ class MainWindow(QMainWindow):
 
 # ── Entry Point ───────────────────────────────────────────────────────
 
-def main():
-    try:
-        from packaging.requirements import Requirement
-    except ImportError:
-        print("ERROR: 'packaging' library not found. Install it: pip install packaging")
-        sys.exit(1)
+def main(argv=None):
+    if argv is None:
+        argv = sys.argv[1:]
+    config_path = "config.json"
+    # Allow `--config /path/to/config.json` from CLI dispatcher
+    if "--config" in argv:
+        idx = argv.index("--config")
+        if idx + 1 < len(argv):
+            config_path = argv[idx + 1]
 
-    app = QApplication(sys.argv)
+    app = QApplication.instance() or QApplication([sys.argv[0]] + list(argv))
     app.setApplicationName("LocalPip")
-    app.setStyle('Fusion')
+    app.setStyle("Fusion")
 
-    # Set default font
     font = QFont(FONT_FAMILY, 13)
     font.setStyleStrategy(QFont.PreferAntialias)
     app.setFont(font)
 
-    window = MainWindow()
+    window = MainWindow(config_path=config_path)
     window.show()
-    sys.exit(app.exec_())
+    return app.exec_()
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

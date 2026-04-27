@@ -1,66 +1,124 @@
 # LocalPip
 
-**LocalPip** is a modern, offline-capable Python package downloader built with PyQt5. It allows you to download Python wheels and their dependencies for specific platforms and Python versions, making it perfect for air-gapped environments or offline development.
+Offline-capable Python package downloader. Pulls wheels (and recursive
+dependencies) from PyPI for arbitrary `(python_version, platform)` targets,
+so you can install them on an air-gapped machine.
 
-![LocalPip Screenshot](https://via.placeholder.com/800x600.png?text=LocalPip+Screenshot)
+Ships with both a **CLI** (stdlib only — single dep is `packaging`) and a
+**PyQt5 GUI** (optional install).
 
-## Features
-
-- **📦 Smart Dependency Resolution**: Automatically finds and downloads all required dependencies for a package.
-- **🎯 Cross-Platform Support**: Download wheels for Windows (`win_amd64`), Linux (`manylinux`), or any other platform.
-- **🐍 Python Version Targeting**: Specify which Python version (3.8 - 3.13) you are targeting.
-- **✨ specific Version Support**: Need an older version? Search for `package==1.2.3` to get exactly what you need.
-- **📄 Import Requirements**: Batch download packages from a `requirements.txt` file.
-- **🛑 Stop Downloads**: Made a mistake? Cancel downloads instantly with a single click.
-- **🖥️ Clean UI**: A beautiful, modern interface with a built-in download queue and detailed package information.
-
-## Installation
-
-1.  Clone the repository:
-    ```bash
-    git clone https://github.com/yourusername/local-pip.git
-    cd local-pip
-    ```
-
-2.  Install the requirements:
-    ```bash
-    pip install -r requirements.txt
-    ```
-
-## Usage
-
-1.  Run the application:
-    ```bash
-    python3 pip.py
-    ```
-
-2.  **Search**: Enter a package name (e.g., `requests` or `pandas==1.5.0`) in the search bar.
-3.  **Configure**: Select your target Python version and Platform from the dropdowns at the bottom.
-4.  **Download**: Click the "Download" button. The package and its dependencies will be added to the queue and downloaded to your specified output directory.
-
-## How to Install Downloaded Packages Offline
-
-Once you have downloaded the wheels to a folder (e.g., `~/Downloads/pip-packages`), you can transfer that folder to your offline machine and install them using `pip`.
-
-To install a specific package and its dependencies from your local folder:
+## Install
 
 ```bash
-pip install package_name --no-index --find-links /path/to/your/downloaded/folder
+# CLI only — minimal footprint
+pip install localpip
+
+# CLI + GUI
+pip install "localpip[gui]"
+
+# From source
+git clone https://github.com/JayshKhan/LocalPip.git
+cd LocalPip
+pip install -e ".[gui]"
 ```
 
-**Example:**
+The CLI works on Python 3.9+. The only runtime dependency is `packaging`;
+HTTP uses stdlib `urllib`, no `requests`.
+
+## CLI usage
+
 ```bash
-# If your wheels are in the current directory
-pip install requests --no-index --find-links .
+# Download a package and its dependencies
+localpip download flask --python 3.11 --platform manylinux2014_x86_64 -o ./wheels
+
+# Download from a requirements file
+localpip download -r requirements.txt -o ./wheels
+
+# Specify multiple PyPI mirrors (extra index URLs)
+localpip download torch \
+    --mirror https://download.pytorch.org/whl/cpu/ \
+    --mirror https://pypi.org/simple/ \
+    -o ./wheels
+
+# Inspect a package without downloading
+localpip info numpy --python 3.12 --platform win_amd64
+
+# Resolve and print the dep graph (no downloads)
+localpip resolve flask -r dev-requirements.txt
+
+# Skip dependency resolution
+localpip download flask --no-deps
+
+# Skip SHA-256 verification (not recommended)
+localpip download flask --no-verify
+
+# Launch the GUI
+localpip gui
 ```
 
-## Requirements
+The CLI shows a live ANSI progress bar (no `tqdm` dependency) and verifies
+SHA-256 digests reported by PyPI.
 
-- Python 3.8+
-- PyQt5
-- requests
-- packaging
+## Installing the downloaded wheels offline
+
+```bash
+pip install package_name --no-index --find-links /path/to/wheels
+```
+
+The CLI prints the exact command at the end of every `download` run.
+
+## GUI
+
+A 4-page workflow: **Configure → Search → Downloads → Transfer**, with three
+themes (Light, Dark, Nord), drag-and-drop `requirements.txt` import, and
+per-package extra index URLs (auto-added for `torch`, `nvidia-*`, `cuda-*`).
+
+## Architecture
+
+```
+localpip/
+├── core.py          # Engine: HTTP, search, download, resolve, wheels, config
+├── cli.py           # argparse CLI + ANSI progress (stdlib only)
+├── gui.py           # PyQt5 GUI (optional, lazy-imported)
+├── __init__.py      # Public API
+└── __main__.py      # `python -m localpip`
+```
+
+The core engine has zero PyQt5 / `requests` dependencies, so it can be used
+as a library:
+
+```python
+from localpip import Engine, ConfigManager, Target
+
+engine = Engine(
+    config=ConfigManager("config.json"),
+    target=Target(python_version="3.11", platform="any"),
+)
+resolved = engine.resolve(["flask"], include_deps=True)
+results = engine.download([pkg for pkg, _ in resolved], output_dir="./wheels")
+```
+
+Wheel selection uses `packaging.tags` (the same logic pip uses), so
+`manylinux_2_X`, `musllinux`, `abi3` and free-threaded (`cp3Xt`) wheels
+all resolve correctly.
+
+## Robustness features
+
+- **SHA-256 verification** against PyPI's reported digests
+- **Atomic downloads** — write to `.part`, fsync, rename
+- **Exponential backoff** on 5xx and connection errors
+- **Concurrent downloads** with cancellable workers
+- **Marker evaluation** for the target environment (drops e.g. `pywin32; sys_platform == 'win32'` on Linux)
+
+## Running the tests
+
+```bash
+pip install -e ".[dev]"
+QT_QPA_PLATFORM=offscreen PYTEST_QT_API=pyqt5 pytest tests/ -v
+```
+
+CLI / core tests run without PyQt5; GUI tests skip if it's not installed.
 
 ## License
 
-MIT License
+MIT

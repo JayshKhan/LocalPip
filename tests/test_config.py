@@ -1,36 +1,39 @@
-"""Tests for ConfigManager: dot-notation access, load/save, defaults."""
+"""ConfigManager: dot-notation, defaults, save/load round-trip, migration."""
+
+from __future__ import annotations
 
 import json
 import os
+
 import pytest
 
-from core import ConfigManager
+from localpip.core import ConfigManager
 
 
-class TestConfigManagerGet:
-    def test_get_top_level_section(self, tmp_config):
+class TestGet:
+    def test_top_level_section(self, tmp_config):
         cm = ConfigManager(tmp_config)
         assert isinstance(cm.get("network"), dict)
 
-    def test_get_nested_key(self, tmp_config):
+    def test_nested_key(self, tmp_config):
         cm = ConfigManager(tmp_config)
         assert cm.get("network.timeout") == 30
 
-    def test_get_deeply_nested_key(self, tmp_config):
+    def test_deeply_nested_key(self, tmp_config):
         cm = ConfigManager(tmp_config)
         assert cm.get("ui.window_size.width") == 1100
 
-    def test_get_missing_key_returns_default(self, tmp_config):
+    def test_missing_key_returns_default(self, tmp_config):
         cm = ConfigManager(tmp_config)
-        assert cm.get("network.nonexistent") is None
-        assert cm.get("network.nonexistent", "fallback") == "fallback"
+        assert cm.get("network.missing") is None
+        assert cm.get("network.missing", "fallback") == "fallback"
 
-    def test_get_missing_section_returns_default(self, tmp_config):
+    def test_missing_section_returns_default(self, tmp_config):
         cm = ConfigManager(tmp_config)
         assert cm.get("totally.made.up", 42) == 42
 
 
-class TestConfigManagerSet:
+class TestSet:
     def test_set_existing_key(self, tmp_config):
         cm = ConfigManager(tmp_config)
         cm.set("network.timeout", 60)
@@ -42,8 +45,8 @@ class TestConfigManagerSet:
         assert cm.get("custom.nested.value") is True
 
 
-class TestConfigManagerLoadSave:
-    def test_save_and_reload_round_trip(self, tmp_config):
+class TestLoadSave:
+    def test_round_trip(self, tmp_config):
         cm = ConfigManager(tmp_config)
         cm.set("network.timeout", 99)
         cm.save()
@@ -52,26 +55,36 @@ class TestConfigManagerLoadSave:
         assert cm2.get("network.timeout") == 99
 
     def test_load_merges_missing_defaults(self, tmp_config):
-        """If a saved config is missing a key that exists in DEFAULT, it's filled in."""
         partial = {"network": {"pypi_mirrors": ["https://custom.org/simple/"]}}
         with open(tmp_config, "w") as f:
             json.dump(partial, f)
 
         cm = ConfigManager(tmp_config)
-        # Preserved from file
         assert cm.get("network.pypi_mirrors") == ["https://custom.org/simple/"]
-        # Filled from defaults
         assert cm.get("network.timeout") == 30
         assert cm.get("ui.theme") == "Light"
 
-    def test_load_migrates_old_pypi_mirror_to_list(self, tmp_config):
-        """Old pypi_mirror (string) is migrated to pypi_mirrors (list)."""
+    def test_migrates_legacy_pypi_mirror_string(self, tmp_config):
         partial = {"network": {"pypi_mirror": "https://legacy.org/simple/"}}
         with open(tmp_config, "w") as f:
             json.dump(partial, f)
 
         cm = ConfigManager(tmp_config)
         assert cm.get("network.pypi_mirrors") == ["https://legacy.org/simple/"]
+        assert cm.get("network.pypi_mirror") is None
+
+    def test_drops_legacy_when_both_present(self, tmp_config):
+        partial = {
+            "network": {
+                "pypi_mirror": "https://legacy.org/simple/",
+                "pypi_mirrors": ["https://new.org/simple/"],
+            }
+        }
+        with open(tmp_config, "w") as f:
+            json.dump(partial, f)
+
+        cm = ConfigManager(tmp_config)
+        assert cm.get("network.pypi_mirrors") == ["https://new.org/simple/"]
         assert cm.get("network.pypi_mirror") is None
 
     def test_corrupt_json_falls_back_to_defaults(self, tmp_config):
@@ -82,7 +95,17 @@ class TestConfigManagerLoadSave:
         assert cm.get("network.timeout") == 30
         assert cm.get("ui.theme") == "Light"
 
-    def test_no_config_file_uses_defaults(self, tmp_config):
+    def test_no_file_uses_defaults(self, tmp_config):
         assert not os.path.exists(tmp_config)
         cm = ConfigManager(tmp_config)
         assert cm.get("download.include_dependencies") is True
+        assert cm.get("download.verify_checksums") is True
+
+    def test_save_creates_parent_directory(self, tmp_path):
+        nested = str(tmp_path / "nested" / "dirs" / "config.json")
+        cm = ConfigManager(nested)
+        cm.set("download.python_version", "3.12")
+        cm.save()
+        assert os.path.exists(nested)
+        with open(nested) as f:
+            assert json.load(f)["download"]["python_version"] == "3.12"

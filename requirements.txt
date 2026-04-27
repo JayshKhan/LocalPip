@@ -1,9 +1,0 @@
-PyQt5
-requests
-packaging
-
-# Testing
-pytest
-pytest-qt
-pytest-cov
-responses
