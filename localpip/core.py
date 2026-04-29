@@ -770,12 +770,38 @@ class Downloader:
         self.http = http
         self.max_workers = max(1, max_workers)
         self._cancelled: set[str] = set()
+        self._paused: set[str] = set()
+        self._state_lock = threading.Lock()
 
     def cancel(self, filename: str) -> None:
-        self._cancelled.add(filename)
+        with self._state_lock:
+            self._cancelled.add(filename)
+            # A paused download can't return False from chunk_cb until it
+            # wakes up, so unpause it so the next loop iteration sees the cancel.
+            self._paused.discard(filename)
+
+    def pause(self, filename: str) -> None:
+        """Block the worker writing this file at the next chunk boundary.
+
+        The kernel keeps buffering bytes from the network (TCP backpressure
+        eventually kicks in), so this is best-effort throttling rather than
+        a true network pause. To resume, call `resume(filename)`.
+        """
+        with self._state_lock:
+            self._paused.add(filename)
+
+    def resume(self, filename: str) -> None:
+        with self._state_lock:
+            self._paused.discard(filename)
+
+    def is_paused(self, filename: str) -> bool:
+        with self._state_lock:
+            return filename in self._paused
 
     def reset_cancellations(self) -> None:
-        self._cancelled.clear()
+        with self._state_lock:
+            self._cancelled.clear()
+            self._paused.clear()
 
     def download(
         self,
@@ -878,8 +904,33 @@ class Downloader:
             on_event("start", package=pkg, filename=filename, url=url)
 
         def chunk_cb(downloaded: int, total: int) -> bool:
+            # Cancel takes precedence over pause.
             if filename in self._cancelled:
                 return False
+            # Block here while paused. We poll the cancelled set so that a
+            # cancel-during-pause still tears down the worker promptly.
+            paused_emitted = False
+            while filename in self._paused:
+                if filename in self._cancelled:
+                    return False
+                if on_event and not paused_emitted:
+                    on_event(
+                        "paused",
+                        package=pkg,
+                        filename=filename,
+                        downloaded=downloaded,
+                        total=total,
+                    )
+                    paused_emitted = True
+                time.sleep(0.1)
+            if paused_emitted and on_event:
+                on_event(
+                    "resumed",
+                    package=pkg,
+                    filename=filename,
+                    downloaded=downloaded,
+                    total=total,
+                )
             if on_event:
                 on_event(
                     "progress",

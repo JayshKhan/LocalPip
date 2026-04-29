@@ -18,6 +18,7 @@ try:
         QSize,
         Qt,
         QThreadPool,
+        QTimer,
         pyqtSignal,
         pyqtSlot,
     )
@@ -68,6 +69,7 @@ from localpip.core import (
 class DownloadStatus(Enum):
     QUEUED = "Queued"
     DOWNLOADING = "Downloading"
+    PAUSED = "Paused"
     COMPLETED = "Completed"
     FAILED = "Failed"
     CANCELLED = "Cancelled"
@@ -184,6 +186,24 @@ class GuiDownloadManager(QObject):
         if item.status == DownloadStatus.QUEUED:
             item.status = DownloadStatus.CANCELLED
             self.progress_updated.emit(download_id, item.__dict__)
+
+    def pause_download(self, download_id: str):
+        with self._lock:
+            item = self.downloads.get(download_id)
+        if not item or item.status != DownloadStatus.DOWNLOADING:
+            return
+        self._downloader.pause(item.filename)
+        item.status = DownloadStatus.PAUSED
+        self.progress_updated.emit(download_id, item.__dict__)
+
+    def resume_download(self, download_id: str):
+        with self._lock:
+            item = self.downloads.get(download_id)
+        if not item or item.status != DownloadStatus.PAUSED:
+            return
+        self._downloader.resume(item.filename)
+        item.status = DownloadStatus.DOWNLOADING
+        self.progress_updated.emit(download_id, item.__dict__)
 
     def retry_download(self, download_id: str):
         with self._lock:
@@ -1092,10 +1112,12 @@ class StagedPackageRow(QFrame):
 
 
 class DownloadItemCard(QFrame):
-    """Single download row with progress bar and status."""
+    """Single download row with progress bar, pause/resume + cancel/retry."""
 
     cancel_clicked = pyqtSignal()
     retry_clicked = pyqtSignal()
+    pause_clicked = pyqtSignal()
+    resume_clicked = pyqtSignal()
 
     def __init__(self, download_id, parent=None):
         super().__init__(parent)
@@ -1107,7 +1129,6 @@ class DownloadItemCard(QFrame):
         layout.setContentsMargins(12, 8, 12, 8)
         layout.setSpacing(4)
 
-        # Top row
         top = QHBoxLayout()
         top.setSpacing(8)
         self.status_dot = QLabel("\u25cf")
@@ -1127,6 +1148,16 @@ class DownloadItemCard(QFrame):
         self.speed_label.setFixedWidth(80)
         top.addWidget(self.speed_label)
 
+        # Pause/resume toggle (hidden until DOWNLOADING)
+        self.pause_btn = QPushButton("\u23f8")  # \u23f8
+        self.pause_btn.setProperty("class", "icon-btn")
+        self.pause_btn.setFixedWidth(28)
+        self.pause_btn.setCursor(Qt.PointingHandCursor)
+        self.pause_btn.setToolTip("Pause")
+        self.pause_btn.clicked.connect(self._on_pause)
+        self.pause_btn.hide()
+        top.addWidget(self.pause_btn)
+
         self.action_btn = QPushButton("Cancel")
         self.action_btn.setProperty("class", "icon-btn")
         self.action_btn.setFixedWidth(60)
@@ -1136,11 +1167,12 @@ class DownloadItemCard(QFrame):
 
         layout.addLayout(top)
 
-        # Progress bar
         self.progress_bar = QProgressBar()
         self.progress_bar.setFixedHeight(4)
         self.progress_bar.setTextVisible(False)
         layout.addWidget(self.progress_bar)
+
+        self._paused = False
 
     def update_progress(self, d):
         self.filename_label.setText(d.get("filename", ""))
@@ -1159,23 +1191,44 @@ class DownloadItemCard(QFrame):
             self.status_dot.setStyleSheet(f"color: {t['warning']}; background: transparent;")
             self.action_btn.setText("Cancel")
             self.action_btn.setEnabled(True)
+            self.pause_btn.show()
+            self._paused = False
+            self.pause_btn.setText("\u23f8")
+            self.pause_btn.setToolTip("Pause")
+        elif status == DownloadStatus.PAUSED:
+            self.status_dot.setStyleSheet(f"color: {t['text_tertiary']}; background: transparent;")
+            self.action_btn.setText("Cancel")
+            self.action_btn.setEnabled(True)
+            self.pause_btn.show()
+            self._paused = True
+            self.pause_btn.setText("\u25b6")  # \u25b6
+            self.pause_btn.setToolTip("Resume")
         elif status == DownloadStatus.COMPLETED:
             self.status_dot.setStyleSheet(f"color: {t['success']}; background: transparent;")
             self.action_btn.setText("Done")
             self.action_btn.setEnabled(False)
+            self.pause_btn.hide()
         elif status in (DownloadStatus.FAILED, DownloadStatus.CANCELLED):
             self.status_dot.setStyleSheet(f"color: {t['error']}; background: transparent;")
             self.action_btn.setText("Retry")
             self.action_btn.setEnabled(True)
+            self.pause_btn.hide()
         else:
             self.status_dot.setStyleSheet(f"color: {t['text_tertiary']}; background: transparent;")
             self.action_btn.setText("Cancel")
+            self.pause_btn.hide()
 
     def _on_action(self):
         if self.action_btn.text() == "Retry":
             self.retry_clicked.emit()
         else:
             self.cancel_clicked.emit()
+
+    def _on_pause(self):
+        if self._paused:
+            self.resume_clicked.emit()
+        else:
+            self.pause_clicked.emit()
 
 
 # ── Sidebar ───────────────────────────────────────────────────────────
@@ -1828,6 +1881,8 @@ class DownloadsPage(QWidget):
             card = DownloadItemCard(download_id)
             card.cancel_clicked.connect(lambda did=download_id: self.dm.cancel_download(did))
             card.retry_clicked.connect(lambda did=download_id: self.dm.retry_download(did))
+            card.pause_clicked.connect(lambda did=download_id: self.dm.pause_download(did))
+            card.resume_clicked.connect(lambda did=download_id: self.dm.resume_download(did))
             self.cards[download_id] = card
             # Insert before the stretch
             self.cards_layout.insertWidget(self.cards_layout.count() - 1, card)
@@ -2123,6 +2178,14 @@ class MainWindow(QMainWindow):
         # Search page
         self.search_page.search_btn.clicked.connect(self._on_search)
         self.search_page.search_bar.returnPressed.connect(self._on_search)
+        # Debounced search-as-you-type: typing pauses → search fires automatically
+        self._search_debounce = QTimer(self)
+        self._search_debounce.setSingleShot(True)
+        self._search_debounce.setInterval(250)
+        self._search_debounce.timeout.connect(self._on_search)
+        self.search_page.search_bar.textChanged.connect(
+            self._on_search_text_changed
+        )
         self.search_page.import_btn.clicked.connect(self._on_import)
         self.search_page.drop_zone.file_dropped.connect(self._on_file_dropped)
         self.search_page.package_card.add_to_queue.connect(self._on_add_to_queue)
@@ -2162,6 +2225,17 @@ class MainWindow(QMainWindow):
             step.update()
 
     # ── Search & Staging ──
+
+    def _on_search_text_changed(self, text: str):
+        """Restart the debounce timer on every keystroke; only fires when typing pauses.
+
+        Skip very short queries (1–2 chars) to avoid hammering PyPI.
+        """
+        text = text.strip()
+        if len(text) < 3:
+            self._search_debounce.stop()
+            return
+        self._search_debounce.start()
 
     def _on_search(self):
         query = self.search_page.search_bar.text().strip()

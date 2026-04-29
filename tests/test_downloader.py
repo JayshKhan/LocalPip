@@ -166,6 +166,54 @@ class TestDownload:
         # Partial file should not be left behind
         assert not os.path.exists(results[0].path)
 
+    def test_pause_resume_lifecycle(self, tmp_path, url_router, fake_response):
+        body = b"x" * 50_000
+        url_router({"https://example.com/pkg.whl": fake_response(body)})
+
+        dl = Downloader(_http(), max_workers=1)
+        events = []
+
+        def on_event(event, **kw):
+            events.append(event)
+            if event == "start":
+                dl.pause("pkg-1.0-py3-none-any.whl")
+            elif event == "paused":
+                import threading as _t
+
+                _t.Timer(0.2, lambda: dl.resume("pkg-1.0-py3-none-any.whl")).start()
+
+        results = dl.download(
+            [_pkg_with_wheel(body)],
+            Target("3.11", "any"),
+            str(tmp_path),
+            on_event=on_event,
+            verify_sha256=False,
+        )
+        assert results[0].ok
+        assert "paused" in events
+        assert "resumed" in events
+
+    def test_pause_then_cancel_aborts(self, tmp_path, url_router, fake_response):
+        body = b"x" * 50_000
+        url_router({"https://example.com/pkg.whl": fake_response(body)})
+
+        dl = Downloader(_http(), max_workers=1)
+
+        def on_event(event, **kw):
+            if event == "paused":
+                dl.cancel("pkg-1.0-py3-none-any.whl")
+
+        dl.pause("pkg-1.0-py3-none-any.whl")
+        results = dl.download(
+            [_pkg_with_wheel(body)],
+            Target("3.11", "any"),
+            str(tmp_path),
+            on_event=on_event,
+            verify_sha256=False,
+        )
+        assert not results[0].ok
+        assert not os.path.exists(results[0].path)
+
     def test_sdist_fallback_when_no_wheel_matches(self, tmp_path, url_router, fake_response):
         body = b"sdist contents"
         url_router({"https://example.com/pkg.tar.gz": fake_response(body)})
