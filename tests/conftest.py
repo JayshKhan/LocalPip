@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import io
 import json
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 import pytest
 
@@ -34,8 +34,8 @@ def sample_package_info():
     def _make(
         name: str = "requests",
         version: str = "2.31.0",
-        deps: Optional[List[str]] = None,
-        files: Optional[List[Dict[str, Any]]] = None,
+        deps: list[str] | None = None,
+        files: list[dict[str, Any]] | None = None,
     ) -> PackageInfo:
         if files is None:
             files = [
@@ -91,7 +91,7 @@ def pypi_json_response():
 class FakeResponse:
     """Minimal urllib.response stand-in for unittest.mock to return."""
 
-    def __init__(self, payload: Any, status: int = 200, headers: Optional[Dict] = None):
+    def __init__(self, payload: Any, status: int = 200, headers: dict | None = None):
         if isinstance(payload, (dict, list)):
             self._body = json.dumps(payload).encode("utf-8")
         elif isinstance(payload, bytes):
@@ -128,7 +128,7 @@ def url_router(monkeypatch):
         url_router({"https://x.com/api": fake_response({"ok": True})})
     """
 
-    def _install(routes: Dict[str, FakeResponse]):
+    def _install(routes: dict[str, FakeResponse]):
         def fake_urlopen(req, timeout=None):
             url = req.full_url if hasattr(req, "full_url") else str(req)
             if url not in routes:
@@ -140,8 +140,6 @@ def url_router(monkeypatch):
                 return value()
             return value
 
-        monkeypatch.setattr(
-            "localpip.core.urllib.request.urlopen", fake_urlopen
-        )
+        monkeypatch.setattr("localpip.core.urllib.request.urlopen", fake_urlopen)
 
     return _install

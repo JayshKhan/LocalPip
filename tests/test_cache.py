@@ -2,9 +2,6 @@
 
 from __future__ import annotations
 
-import json
-import os
-
 import pytest
 
 from localpip.core import HTTPClient, HTTPError, JsonCache
@@ -36,11 +33,13 @@ def test_cache_corrupted_file_returns_none(tmp_path):
 class TestHTTPClientCacheIntegration:
     def test_first_fetch_populates_cache(self, tmp_path, url_router, fake_response):
         cache = JsonCache(str(tmp_path))
-        url_router({
-            "https://x.com/api": fake_response(
-                {"v": 1}, headers={"ETag": '"v1"', "Last-Modified": "Mon"}
-            ),
-        })
+        url_router(
+            {
+                "https://x.com/api": fake_response(
+                    {"v": 1}, headers={"ETag": '"v1"', "Last-Modified": "Mon"}
+                ),
+            }
+        )
         client = HTTPClient(timeout=2, max_retries=1, cache=cache)
         data = client.get_json("https://x.com/api")
         assert data == {"v": 1}
@@ -50,6 +49,7 @@ class TestHTTPClientCacheIntegration:
 
     def test_304_returns_cached_data(self, tmp_path, monkeypatch):
         from urllib.error import HTTPError as UrlHTTPError
+
         cache = JsonCache(str(tmp_path))
         cache.put("https://x.com/api", {"v": 1}, etag='"v1"')
 
@@ -65,6 +65,7 @@ class TestHTTPClientCacheIntegration:
 
     def test_network_error_falls_back_to_stale_cache(self, tmp_path, monkeypatch):
         from urllib.error import URLError
+
         cache = JsonCache(str(tmp_path))
         cache.put("https://x.com/api", {"v": 1, "stale": True}, etag='"v1"')
 
@@ -80,6 +81,7 @@ class TestHTTPClientCacheIntegration:
 class TestPerHostRetryBudget:
     def test_dead_host_short_circuits_after_threshold(self, monkeypatch):
         from urllib.error import URLError
+
         client = HTTPClient(timeout=1, max_retries=1, host_failure_threshold=2)
 
         calls = []
@@ -101,6 +103,7 @@ class TestPerHostRetryBudget:
 
     def test_success_resets_failure_count(self, monkeypatch, fake_response):
         from urllib.error import URLError
+
         client = HTTPClient(timeout=1, max_retries=1, host_failure_threshold=2)
 
         state = {"fail": True}

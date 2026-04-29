@@ -37,7 +37,15 @@ dependencies = [
 gui = ["PyQt5>=5.15"]
 test = ["pytest>=7", "pytest-cov"]
 test-gui = ["pytest-qt"]
-dev = ["pytest>=7", "pytest-cov", "pytest-qt", "PyQt5>=5.15"]
+lint = ["ruff>=0.5", "mypy>=1.5"]
+dev = [
+    "pytest>=7",
+    "pytest-cov",
+    "pytest-qt",
+    "PyQt5>=5.15",
+    "ruff>=0.5",
+    "mypy>=1.5",
+]
 
 [project.urls]
 Homepage = "https://github.com/JayshKhan/LocalPip"
@@ -53,6 +61,44 @@ localpip-gui = "localpip.gui:main"
 include = ["localpip*"]
 exclude = ["tests*"]
 
+[tool.setuptools.package-data]
+localpip = ["py.typed"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-ra"
+
+[tool.ruff]
+line-length = 100
+target-version = "py39"
+extend-exclude = ["build", "dist", ".eggs"]
+
+[tool.ruff.lint]
+# Conservative rule set: flake8 essentials + isort + a few obvious bug-catchers.
+select = ["E", "F", "W", "I", "B", "UP", "SIM"]
+ignore = [
+    "E501",   # line length — enforced loosely; long URLs in docstrings are fine
+    "B008",   # function call in default — used for ConfigManager.DEFAULT
+    "SIM117", # nested with — sometimes clearer
+    "UP006",  # forces collections.abc on 3.9 which can be noisy
+    "UP007",  # X | Y unions need py3.10+
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["B011", "SIM"]
+
+[tool.mypy]
+python_version = "3.9"
+files = ["localpip"]
+ignore_missing_imports = true
+follow_imports = "silent"
+warn_unused_configs = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+no_implicit_optional = true
+# Stricter checks on the public engine module; cli.py / gui.py are looser.
+strict_equality = true
+
+[[tool.mypy.overrides]]
+module = "localpip.gui"
+ignore_errors = true

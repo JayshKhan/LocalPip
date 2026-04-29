@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import pytest
-
 from localpip.core import (
     Target,
     compatible_tags,
@@ -177,17 +175,13 @@ class TestSdistFallback:
 
     def test_select_distribution_falls_back_to_sdist(self):
         files = make_files("pkg-1.0-cp310-cp310-win_amd64.whl") + [self._sdist()]
-        dist, kind = select_distribution(
-            files, Target("3.11", "manylinux2014_x86_64")
-        )
+        dist, kind = select_distribution(files, Target("3.11", "manylinux2014_x86_64"))
         assert kind == "sdist"
         assert dist["filename"] == "pkg-1.0.tar.gz"
 
     def test_select_distribution_disable_sdist(self):
         files = [self._sdist()]
-        dist, kind = select_distribution(
-            files, Target("3.11", "any"), allow_sdist=False
-        )
+        dist, kind = select_distribution(files, Target("3.11", "any"), allow_sdist=False)
         assert dist is None
         assert kind == "none"
 
@@ -204,11 +198,13 @@ class TestExplainNoMatch:
         assert "cp310-cp310-win_amd64" in msg
 
     def test_no_wheels_only_sdist(self):
-        files = [{
-            "filename": "pkg-1.0.tar.gz",
-            "url": "https://x.com/p.tar.gz",
-            "packagetype": "sdist",
-        }]
+        files = [
+            {
+                "filename": "pkg-1.0.tar.gz",
+                "url": "https://x.com/p.tar.gz",
+                "packagetype": "sdist",
+            }
+        ]
         msg = explain_no_match(files, Target("3.11", "any"))
         assert "sdist" in msg
         assert "must be built" in msg

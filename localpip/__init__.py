@@ -9,8 +9,8 @@ GUI: `localpip gui`  (requires `pip install localpip[gui]`)
 
 from localpip.core import (
     ConfigManager,
-    DownloadResult,
     Downloader,
+    DownloadResult,
     Engine,
     HTTPClient,
     HTTPError,

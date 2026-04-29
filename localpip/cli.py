@@ -28,7 +28,8 @@ import os
 import re
 import sys
 import threading
-from typing import Any, Dict, List, Optional, Sequence
+from collections.abc import Sequence
+from typing import Any
 
 from localpip import __version__
 from localpip.core import (
@@ -45,7 +46,6 @@ from localpip.core import (
     select_wheel,
 )
 
-
 # ── Progress / formatting ─────────────────────────────────────────────
 
 
@@ -59,11 +59,11 @@ def _isatty() -> bool:
 def fmt_bytes(n: int) -> str:
     if n < 1024:
         return f"{n} B"
-    if n < 1024 ** 2:
+    if n < 1024**2:
         return f"{n / 1024:.1f} KiB"
-    if n < 1024 ** 3:
-        return f"{n / 1024 ** 2:.1f} MiB"
-    return f"{n / 1024 ** 3:.2f} GiB"
+    if n < 1024**3:
+        return f"{n / 1024**2:.1f} MiB"
+    return f"{n / 1024**3:.2f} GiB"
 
 
 def _bar(fraction: float, width: int = 24) -> str:
@@ -79,7 +79,7 @@ class CliReporter:
         self.verbose = verbose
         self.no_color = no_color or not _isatty()
         self.lock = threading.Lock()
-        self._active: Dict[str, dict] = {}
+        self._active: dict[str, dict] = {}
         self._last_lines = 0
 
     # ── ANSI helpers ──
@@ -174,9 +174,7 @@ class CliReporter:
             frac = done / total if total else 0.0
             short = fn if len(fn) <= 38 else "…" + fn[-37:]
             if total:
-                lines.append(
-                    f"  {short:38s} [{_bar(frac)}] {fmt_bytes(done)}/{fmt_bytes(total)}"
-                )
+                lines.append(f"  {short:38s} [{_bar(frac)}] {fmt_bytes(done)}/{fmt_bytes(total)}")
             else:
                 lines.append(f"  {short:38s} {fmt_bytes(done)}")
         for line in lines:
@@ -213,9 +211,9 @@ def _build_engine(args: argparse.Namespace) -> Engine:
     return Engine(config=config, target=target, use_cache=use_cache)
 
 
-def _read_requirements_file(path: str) -> List[str]:
-    out: List[str] = []
-    with open(path, "r", encoding="utf-8") as f:
+def _read_requirements_file(path: str) -> list[str]:
+    out: list[str] = []
+    with open(path, encoding="utf-8") as f:
         for raw in f:
             line = raw.strip()
             if not line or line.startswith("#") or line.startswith("-"):
@@ -224,7 +222,7 @@ def _read_requirements_file(path: str) -> List[str]:
     return out
 
 
-def _gather_requirements(args: argparse.Namespace) -> List[str]:
+def _gather_requirements(args: argparse.Namespace) -> list[str]:
     reqs = list(args.packages or [])
     for path in args.requirement or []:
         if not os.path.exists(path):
@@ -248,14 +246,10 @@ def cmd_download(args: argparse.Namespace) -> int:
     engine = _build_engine(args)
     reqs = _gather_requirements(args)
     json_mode = getattr(args, "json_output", False)
-    reporter = CliReporter(
-        verbose=args.verbose, no_color=args.no_color or json_mode
-    )
+    reporter = CliReporter(verbose=args.verbose, no_color=args.no_color or json_mode)
 
     if not json_mode:
-        print(
-            f"localpip — target py{engine.target.python_xy}/{engine.target.platform}"
-        )
+        print(f"localpip — target py{engine.target.python_xy}/{engine.target.platform}")
         print(f"  mirrors: {', '.join(engine.resolver.mirrors)}")
         print(f"  output:  {args.output or engine.config.get('download.default_path')}")
         print()
@@ -315,9 +309,7 @@ def cmd_download(args: argparse.Namespace) -> int:
 
 def _cmd_download_locked(args: argparse.Namespace) -> int:
     json_mode = getattr(args, "json_output", False)
-    reporter = CliReporter(
-        verbose=args.verbose, no_color=args.no_color or json_mode
-    )
+    reporter = CliReporter(verbose=args.verbose, no_color=args.no_color or json_mode)
     try:
         lock = LockFile.read(args.lock)
     except (OSError, ValueError, KeyError) as e:
@@ -364,13 +356,9 @@ def cmd_lock(args: argparse.Namespace) -> int:
     engine = _build_engine(args)
     reqs = _gather_requirements(args)
     json_mode = getattr(args, "json_output", False)
-    reporter = CliReporter(
-        verbose=args.verbose, no_color=args.no_color or json_mode
-    )
+    reporter = CliReporter(verbose=args.verbose, no_color=args.no_color or json_mode)
     if not json_mode:
-        print(
-            f"Resolving for lockfile (py{engine.target.python_xy}/{engine.target.platform})…"
-        )
+        print(f"Resolving for lockfile (py{engine.target.python_xy}/{engine.target.platform})…")
     resolved = engine.resolve(
         reqs,
         include_deps=not args.no_deps,
@@ -385,9 +373,7 @@ def cmd_lock(args: argparse.Namespace) -> int:
             print(reporter.red(msg), file=sys.stderr)
         return 1
 
-    lock = LockFile.from_resolution(
-        resolved, engine.target, allow_sdist=not args.no_sdist
-    )
+    lock = LockFile.from_resolution(resolved, engine.target, allow_sdist=not args.no_sdist)
     out_path = args.output or "localpip.lock.json"
     lock.write(out_path)
 
@@ -419,15 +405,15 @@ _WHEEL_NAME_RE = re.compile(
 )
 
 
-def _scan_directory(path: str) -> List[Dict[str, Any]]:
+def _scan_directory(path: str) -> list[dict[str, Any]]:
     if not os.path.isdir(path):
         return []
-    entries: List[Dict[str, Any]] = []
+    entries: list[dict[str, Any]] = []
     for fn in sorted(os.listdir(path)):
         full = os.path.join(path, fn)
         if not os.path.isfile(full):
             continue
-        info: Dict[str, Any] = {
+        info: dict[str, Any] = {
             "filename": fn,
             "size": os.path.getsize(full),
             "kind": "other",
@@ -473,7 +459,9 @@ def cmd_list(args: argparse.Namespace) -> int:
     print()
     for e in wheels:
         if "name" in e:
-            print(f"  {e['name']:<28s} {e['version']:<14s} {fmt_bytes(e['size']):>10s}  {e.get('tag','')}")
+            print(
+                f"  {e['name']:<28s} {e['version']:<14s} {fmt_bytes(e['size']):>10s}  {e.get('tag', '')}"
+            )
         else:
             print(f"  {e['filename']:<60s} {fmt_bytes(e['size']):>10s}")
     for e in sdists:
@@ -488,7 +476,7 @@ def cmd_list(args: argparse.Namespace) -> int:
 def cmd_clean(args: argparse.Namespace) -> int:
     target_dir = args.directory or args.output or os.getcwd()
     json_mode = getattr(args, "json_output", False)
-    removed: List[Dict[str, Any]] = []
+    removed: list[dict[str, Any]] = []
     if not os.path.isdir(target_dir):
         msg = f"not a directory: {target_dir}"
         if json_mode:
@@ -529,9 +517,9 @@ def cmd_clean(args: argparse.Namespace) -> int:
 
     if json_mode:
         json.dump(
-            {"ok": True, "directory": target_dir, "removed": removed,
-             "dry_run": args.dry_run},
-            sys.stdout, indent=2,
+            {"ok": True, "directory": target_dir, "removed": removed, "dry_run": args.dry_run},
+            sys.stdout,
+            indent=2,
         )
         sys.stdout.write("\n")
         return 0
@@ -546,9 +534,7 @@ def cmd_clean(args: argparse.Namespace) -> int:
     return 0
 
 
-def _render_download_json(
-    results: Sequence[DownloadResult], output_dir: str
-) -> int:
+def _render_download_json(results: Sequence[DownloadResult], output_dir: str) -> int:
     payload = {
         "ok": all(r.ok for r in results),
         "output_dir": output_dir,
@@ -571,9 +557,7 @@ def _render_download_json(
     return 0 if payload["ok"] else 1
 
 
-def _summarize(
-    results: Sequence[DownloadResult], output_dir: str, reporter: CliReporter
-) -> int:
+def _summarize(results: Sequence[DownloadResult], output_dir: str, reporter: CliReporter) -> int:
     ok = [r for r in results if r.ok and not r.skipped]
     skipped = [r for r in results if r.skipped]
     failed = [r for r in results if not r.ok]
@@ -595,10 +579,7 @@ def _summarize(
     if ok or skipped:
         print()
         names = sorted({r.package for r in results if r.ok})
-        cmd = (
-            f'pip install --no-index --find-links "{output_dir}" '
-            + " ".join(names)
-        )
+        cmd = f'pip install --no-index --find-links "{output_dir}" ' + " ".join(names)
         print(reporter.dim("Install offline with:"))
         print(f"  {cmd}")
     return 0 if not failed else 1
@@ -671,9 +652,7 @@ def cmd_resolve(args: argparse.Namespace) -> int:
     engine = _build_engine(args)
     reqs = _gather_requirements(args)
     json_mode = getattr(args, "json_output", False)
-    reporter = CliReporter(
-        verbose=args.verbose, no_color=args.no_color or json_mode
-    )
+    reporter = CliReporter(verbose=args.verbose, no_color=args.no_color or json_mode)
     resolved = engine.resolve(
         reqs,
         include_deps=not args.no_deps,
@@ -694,7 +673,8 @@ def cmd_resolve(args: argparse.Namespace) -> int:
                     for p, is_dep in resolved
                 ],
             },
-            sys.stdout, indent=2,
+            sys.stdout,
+            indent=2,
         )
         sys.stdout.write("\n")
         return 0 if resolved else 1
@@ -740,9 +720,7 @@ def _add_engine_args(p: argparse.ArgumentParser) -> None:
         default=default_config_path(),
         help="path to config.json (default: $LOCALPIP_CONFIG, then $XDG_CONFIG_HOME/localpip/config.json, then ./config.json)",
     )
-    p.add_argument(
-        "--jobs", type=int, help="max concurrent downloads (default from config)"
-    )
+    p.add_argument("--jobs", type=int, help="max concurrent downloads (default from config)")
     p.add_argument(
         "--no-cache",
         action="store_true",
@@ -755,9 +733,7 @@ def _add_engine_args(p: argparse.ArgumentParser) -> None:
         help="emit machine-readable JSON instead of human output",
     )
     p.add_argument("-v", "--verbose", action="store_true")
-    p.add_argument(
-        "--no-color", action="store_true", help="disable ANSI colors / progress bars"
-    )
+    p.add_argument("--no-color", action="store_true", help="disable ANSI colors / progress bars")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -808,11 +784,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     lk.add_argument("packages", nargs="*", help="package names or specs")
     lk.add_argument("-r", "--requirement", action="append", metavar="FILE")
-    lk.add_argument("-o", "--output",
-                    help="lockfile path (default: ./localpip.lock.json)")
+    lk.add_argument("-o", "--output", help="lockfile path (default: ./localpip.lock.json)")
     lk.add_argument("--no-deps", action="store_true")
-    lk.add_argument("--no-sdist", action="store_true",
-                    help="exclude sdist-only packages from the lockfile")
+    lk.add_argument(
+        "--no-sdist", action="store_true", help="exclude sdist-only packages from the lockfile"
+    )
     _add_engine_args(lk)
     lk.set_defaults(func=cmd_lock)
 
@@ -854,7 +830,8 @@ def build_parser() -> argparse.ArgumentParser:
         "--dry-run", action="store_true", help="show what would be removed without deleting"
     )
     cln.add_argument(
-        "--validate", action="store_true",
+        "--validate",
+        action="store_true",
         help="also validate wheel readability (slower)",
     )
     cln.add_argument(
@@ -875,7 +852,7 @@ def build_parser() -> argparse.ArgumentParser:
     return p
 
 
-def main(argv: Optional[Sequence[str]] = None) -> int:
+def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     logging.basicConfig(
         level=logging.DEBUG if getattr(args, "verbose", False) else logging.WARNING,

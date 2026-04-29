@@ -2,20 +2,19 @@
 
 from __future__ import annotations
 
-import os
 import pytest
 
 PyQt5 = pytest.importorskip("PyQt5")
 pytest.importorskip("pytestqt")  # provided by pytest-qt
 
-from localpip.core import ConfigManager, PackageInfo  # noqa: E402
+from localpip.core import PackageInfo  # noqa: E402
 from localpip.gui import (  # noqa: E402
     THEMES,
+    MainWindow,
     PackageStagedEvent,
     generate_stylesheet,
     get_theme,
     set_theme,
-    MainWindow,
 )
 
 
@@ -29,7 +28,7 @@ def main_window(qapp, tmp_path):
 
 class TestThemes:
     def test_all_themes_generate_valid_stylesheet(self):
-        for name, theme_dict in THEMES.items():
+        for _name, theme_dict in THEMES.items():
             ss = generate_stylesheet(theme_dict)
             assert isinstance(ss, str)
             assert len(ss) > 100

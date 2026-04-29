@@ -18,6 +18,7 @@ Public surface:
 from __future__ import annotations
 
 import concurrent.futures
+import contextlib
 import hashlib
 import json
 import logging
@@ -28,13 +29,17 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Set, Tuple
+from typing import TYPE_CHECKING, Any, Callable
 
 # Note: packaging.tags is imported lazily inside `compatible_tags` and
 # `select_distribution` to keep `localpip --help` startup fast (~80 ms saved).
 from packaging.requirements import Requirement
 from packaging.version import parse as parse_version
+
+if TYPE_CHECKING:
+    from packaging.tags import Tag
 
 logger = logging.getLogger("localpip")
 
@@ -84,8 +89,8 @@ class PackageInfo:
     summary: str = ""
     author: str = ""
     license: str = ""
-    requires_dist: List[str] = field(default_factory=list)
-    files: List[Dict[str, Any]] = field(default_factory=list)
+    requires_dist: list[str] = field(default_factory=list)
+    files: list[dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass
@@ -95,9 +100,9 @@ class DownloadResult:
     filename: str
     path: str
     size: int = 0
-    sha256: Optional[str] = None
+    sha256: str | None = None
     skipped: bool = False
-    error: Optional[str] = None
+    error: str | None = None
 
     @property
     def ok(self) -> bool:
@@ -107,7 +112,7 @@ class DownloadResult:
 # ── Wheel selection (proper PEP 425 / packaging.tags based) ──────────
 
 
-def _platform_tags(platform: str) -> List[str]:
+def _platform_tags(platform: str) -> list[str]:
     """Compatible platform tags for `platform`, most specific first, ending with 'any'."""
     if platform == "any" or not platform:
         return ["any"]
@@ -149,7 +154,7 @@ def _platform_tags(platform: str) -> List[str]:
     return [platform, "any"]
 
 
-def compatible_tags(target: Target) -> List["Tag"]:
+def compatible_tags(target: Target) -> list[Tag]:
     """Compatible PEP 425 tags for `target`, ranked most-specific first.
 
     Includes:
@@ -167,7 +172,7 @@ def compatible_tags(target: Target) -> List["Tag"]:
 
     plats = _platform_tags(target.platform)
 
-    tags: List["Tag"] = []
+    tags: list[Tag] = []
     # 1. cp{XY} with exact cp{XY} ABI — the perfect match
     for plat in plats:
         tags.append(Tag(interp_cp, interp_cp, plat))
@@ -198,9 +203,7 @@ def _wheel_tag_string(filename: str) -> str:
     return "-".join(parts[-3:])
 
 
-def select_wheel(
-    files: Sequence[Dict[str, Any]], target: Target
-) -> Optional[Dict[str, Any]]:
+def select_wheel(files: Sequence[dict[str, Any]], target: Target) -> dict[str, Any] | None:
     """Return the best wheel from `files` for `target`, or None.
 
     Uses packaging.tags so manylinux/musllinux/abi3/free-threaded are handled
@@ -215,7 +218,7 @@ def select_wheel(
     compat = compatible_tags(target)
     rank = {tag: i for i, tag in enumerate(compat)}
 
-    best: Optional[Dict[str, Any]] = None
+    best: dict[str, Any] | None = None
     best_rank = len(compat)  # sentinel: unmatched
 
     for f in wheels:
@@ -232,7 +235,7 @@ def select_wheel(
     return best
 
 
-def pick_sdist(files: Sequence[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+def pick_sdist(files: Sequence[dict[str, Any]]) -> dict[str, Any] | None:
     """Return the first sdist (.tar.gz / .zip) from `files`, or None."""
     for f in files:
         ptype = f.get("packagetype")
@@ -246,11 +249,11 @@ def pick_sdist(files: Sequence[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
 
 
 def select_distribution(
-    files: Sequence[Dict[str, Any]],
+    files: Sequence[dict[str, Any]],
     target: Target,
     *,
     allow_sdist: bool = True,
-) -> Tuple[Optional[Dict[str, Any]], str]:
+) -> tuple[dict[str, Any] | None, str]:
     """Pick a wheel for `target`; fall back to an sdist if `allow_sdist`.
 
     Returns (file_dict, kind) where kind is "wheel", "sdist", or "none".
@@ -266,7 +269,7 @@ def select_distribution(
     return None, "none"
 
 
-def explain_no_match(files: Sequence[Dict[str, Any]], target: Target) -> str:
+def explain_no_match(files: Sequence[dict[str, Any]], target: Target) -> str:
     """Human-readable explanation of why no wheel matched `target`.
 
     Lists the python/abi/platform tags actually published so the user can
@@ -282,7 +285,7 @@ def explain_no_match(files: Sequence[Dict[str, Any]], target: Target) -> str:
             )
         return "no wheels and no sdist published for this version"
 
-    seen_tags: List[str] = []
+    seen_tags: list[str] = []
     for f in wheels:
         fn = f.get("filename", "")
         try:
@@ -293,8 +296,7 @@ def explain_no_match(files: Sequence[Dict[str, Any]], target: Target) -> str:
     sample = ", ".join(sorted(set(seen_tags))[:6])
     extra = "" if len(set(seen_tags)) <= 6 else f" (+{len(set(seen_tags)) - 6} more)"
     return (
-        f"no wheel matches py{target.python_xy}/{target.platform}; "
-        f"published tags: {sample}{extra}"
+        f"no wheel matches py{target.python_xy}/{target.platform}; published tags: {sample}{extra}"
     )
 
 
@@ -302,9 +304,7 @@ def explain_no_match(files: Sequence[Dict[str, Any]], target: Target) -> str:
 
 
 def _xdg_cache_home() -> str:
-    return os.environ.get("XDG_CACHE_HOME") or os.path.join(
-        os.path.expanduser("~"), ".cache"
-    )
+    return os.environ.get("XDG_CACHE_HOME") or os.path.join(os.path.expanduser("~"), ".cache")
 
 
 class JsonCache:
@@ -319,22 +319,18 @@ class JsonCache:
     write failures are logged but never raised.
     """
 
-    def __init__(self, cache_dir: Optional[str] = None):
-        self.cache_dir = cache_dir or os.path.join(
-            _xdg_cache_home(), "localpip", "json"
-        )
-        try:
+    def __init__(self, cache_dir: str | None = None):
+        self.cache_dir = cache_dir or os.path.join(_xdg_cache_home(), "localpip", "json")
+        with contextlib.suppress(OSError):
             os.makedirs(self.cache_dir, exist_ok=True)
-        except OSError:
-            pass
 
     def _path(self, url: str) -> str:
         digest = hashlib.sha256(url.encode("utf-8")).hexdigest()
         return os.path.join(self.cache_dir, f"{digest}.json")
 
-    def get(self, url: str) -> Optional[Dict[str, Any]]:
+    def get(self, url: str) -> dict[str, Any] | None:
         try:
-            with open(self._path(url), "r", encoding="utf-8") as f:
+            with open(self._path(url), encoding="utf-8") as f:
                 return json.load(f)
         except (OSError, json.JSONDecodeError):
             return None
@@ -343,8 +339,8 @@ class JsonCache:
         self,
         url: str,
         data: Any,
-        etag: Optional[str] = None,
-        last_modified: Optional[str] = None,
+        etag: str | None = None,
+        last_modified: str | None = None,
     ) -> None:
         payload = {
             "data": data,
@@ -376,7 +372,7 @@ class HTTPClient:
         max_retries: int = 3,
         backoff_base: float = 1.0,
         user_agent: str = USER_AGENT,
-        cache: Optional[JsonCache] = None,
+        cache: JsonCache | None = None,
         host_failure_threshold: int = HOST_FAILURE_THRESHOLD,
     ):
         self.timeout = timeout
@@ -385,7 +381,7 @@ class HTTPClient:
         self.user_agent = user_agent
         self.cache = cache
         self.host_failure_threshold = host_failure_threshold
-        self._host_failures: Dict[str, int] = {}
+        self._host_failures: dict[str, int] = {}
         self._host_lock = threading.Lock()
 
     @staticmethod
@@ -397,9 +393,7 @@ class HTTPClient:
         with self._host_lock:
             n = self._host_failures.get(host, 0)
         if n >= self.host_failure_threshold:
-            raise HTTPError(
-                f"host {host} marked dead after {n} consecutive failures"
-            )
+            raise HTTPError(f"host {host} marked dead after {n} consecutive failures")
 
     def _record_host_failure(self, url: str) -> None:
         host = self._host(url)
@@ -412,7 +406,7 @@ class HTTPClient:
             self._host_failures.pop(host, None)
 
     def _build_request(
-        self, url: str, headers: Optional[Dict[str, str]] = None
+        self, url: str, headers: dict[str, str] | None = None
     ) -> urllib.request.Request:
         h = {"User-Agent": self.user_agent}
         if headers:
@@ -427,19 +421,19 @@ class HTTPClient:
         return isinstance(err, (urllib.error.URLError, socket.timeout, TimeoutError))
 
     def _sleep(self, attempt: int) -> None:
-        time.sleep(self.backoff_base * (2 ** attempt))
+        time.sleep(self.backoff_base * (2**attempt))
 
-    def get_json(self, url: str) -> Dict[str, Any]:
+    def get_json(self, url: str) -> dict[str, Any]:
         self._check_host(url)
         cached = self.cache.get(url) if self.cache else None
-        revalidate_headers: Dict[str, str] = {}
+        revalidate_headers: dict[str, str] = {}
         if cached:
             if cached.get("etag"):
                 revalidate_headers["If-None-Match"] = cached["etag"]
             if cached.get("last_modified"):
                 revalidate_headers["If-Modified-Since"] = cached["last_modified"]
 
-        last_err: Optional[Exception] = None
+        last_err: Exception | None = None
         for attempt in range(self.max_retries):
             try:
                 req = self._build_request(url, headers=revalidate_headers)
@@ -467,9 +461,7 @@ class HTTPClient:
                     self._record_host_failure(url)
                     # Network error but we have stale cache → serve it.
                     if cached is not None:
-                        logger.warning(
-                            "serving stale cache for %s after HTTP %s", url, e.code
-                        )
+                        logger.warning("serving stale cache for %s after HTTP %s", url, e.code)
                         return cached["data"]
                     raise HTTPError(f"HTTP {e.code} from {url}") from e
                 self._sleep(attempt)
@@ -478,9 +470,7 @@ class HTTPClient:
                 if not self._retryable(attempt, e):
                     self._record_host_failure(url)
                     if cached is not None:
-                        logger.warning(
-                            "serving stale cache for %s after network error", url
-                        )
+                        logger.warning("serving stale cache for %s after network error", url)
                         return cached["data"]
                     raise HTTPError(f"Network error fetching {url}: {e}") from e
                 self._sleep(attempt)
@@ -494,22 +484,20 @@ class HTTPClient:
         url: str,
         dest_path: str,
         chunk_size: int = 16384,
-        on_chunk: Optional[Callable[[int, int], bool]] = None,
-    ) -> Tuple[str, int]:
+        on_chunk: Callable[[int, int], bool] | None = None,
+    ) -> tuple[str, int]:
         """Download `url` to `dest_path` atomically. Returns (sha256_hex, size).
 
         `on_chunk(downloaded, total)` is called per chunk; return False to abort.
         Aborts and partial files are cleaned up. Retries on transient errors.
         """
-        last_err: Optional[Exception] = None
+        last_err: Exception | None = None
         for attempt in range(self.max_retries):
             tmp_path = dest_path + ".part"
             h = hashlib.sha256()
             downloaded = 0
             try:
-                with urllib.request.urlopen(
-                    self._build_request(url), timeout=self.timeout
-                ) as resp:
+                with urllib.request.urlopen(self._build_request(url), timeout=self.timeout) as resp:
                     total = int(resp.headers.get("content-length") or 0)
                     with open(tmp_path, "wb") as f:
                         while True:
@@ -519,9 +507,7 @@ class HTTPClient:
                             f.write(chunk)
                             h.update(chunk)
                             downloaded += len(chunk)
-                            if on_chunk is not None and not on_chunk(
-                                downloaded, total
-                            ):
+                            if on_chunk is not None and not on_chunk(downloaded, total):
                                 self._cleanup(tmp_path)
                                 raise HTTPError("cancelled")
                 os.replace(tmp_path, dest_path)
@@ -547,18 +533,16 @@ class HTTPClient:
 
     @staticmethod
     def _cleanup(path: str) -> None:
-        try:
+        with contextlib.suppress(OSError):
             os.unlink(path)
-        except OSError:
-            pass
 
 
 # ── Resolver (PyPI JSON API + dependency graph) ─────────────────────
 
 
-def build_environment(target: Target) -> Dict[str, str]:
+def build_environment(target: Target) -> dict[str, str]:
     """PEP 508 marker-evaluation environment for `target`."""
-    env: Dict[str, str] = {
+    env: dict[str, str] = {
         "python_version": target.python_xy,
         "python_full_version": target.python_version,
         "implementation_name": "cpython",
@@ -611,7 +595,7 @@ class Resolver:
         self.target = target
 
     @staticmethod
-    def _json_url(mirror: str, name: str, version: Optional[str] = None) -> str:
+    def _json_url(mirror: str, name: str, version: str | None = None) -> str:
         base = mirror.rstrip("/")
         if base.endswith("/simple"):
             base = base[: -len("/simple")] + "/pypi"
@@ -623,7 +607,7 @@ class Resolver:
             return f"{base}/{name}/{version}/json"
         return f"{base}/{name}/json"
 
-    def get_package_info(self, requirement: str) -> Optional[PackageInfo]:
+    def get_package_info(self, requirement: str) -> PackageInfo | None:
         """Resolve a requirement string against the configured mirrors."""
         try:
             req = Requirement(requirement)
@@ -645,9 +629,7 @@ class Resolver:
                         key=parse_version,
                     )
                     if not matching:
-                        logger.warning(
-                            "no versions of %s match %s", req.name, req.specifier
-                        )
+                        logger.warning("no versions of %s match %s", req.name, req.specifier)
                         continue
                     target_version = str(matching[-1])
                     if target_version != data.get("info", {}).get("version"):
@@ -660,9 +642,7 @@ class Resolver:
 
                 info = data.get("info", {}) or {}
                 version = info.get("version") or ""
-                files = data.get("releases", {}).get(version, []) or data.get(
-                    "urls", []
-                )
+                files = data.get("releases", {}).get(version, []) or data.get("urls", [])
                 return PackageInfo(
                     name=info.get("name") or req.name,
                     version=version,
@@ -682,9 +662,9 @@ class Resolver:
         requirements: Iterable[str],
         *,
         include_deps: bool = True,
-        on_event: Optional[Callable[..., None]] = None,
+        on_event: Callable[..., None] | None = None,
         max_workers: int = 8,
-    ) -> List[Tuple[PackageInfo, bool]]:
+    ) -> list[tuple[PackageInfo, bool]]:
         """Resolve `requirements` (and optionally their deps).
 
         Resolution proceeds level-by-level (BFS): all requirements at a given
@@ -698,8 +678,8 @@ class Resolver:
         env = build_environment(self.target)
 
         # Roots from initial requirements (used to compute is_dependency).
-        roots: Set[str] = set()
-        current_level: List[str] = []
+        roots: set[str] = set()
+        current_level: list[str] = []
         for r in requirements:
             try:
                 roots.add(Requirement(r).name.lower())
@@ -709,18 +689,18 @@ class Resolver:
                 continue
             current_level.append(r)
 
-        seen: Set[str] = set()
-        out: List[Tuple[PackageInfo, bool]] = []
+        seen: set[str] = set()
+        out: list[tuple[PackageInfo, bool]] = []
 
-        def _fetch(req_str: str) -> Tuple[str, Optional[PackageInfo]]:
+        def _fetch(req_str: str) -> tuple[str, PackageInfo | None]:
             if on_event:
                 on_event("resolving", requirement=req_str)
             return req_str, self.get_package_info(req_str)
 
         while current_level:
             # Dedupe within this level and against globally-seen
-            level_unique: List[str] = []
-            level_names: Set[str] = set()
+            level_unique: list[str] = []
+            level_names: set[str] = set()
             for req_str in current_level:
                 try:
                     name = Requirement(req_str).name.lower()
@@ -740,12 +720,10 @@ class Resolver:
 
             # Parallel fetch — but not so many workers that we hammer mirrors
             workers = min(max_workers, len(level_unique))
-            with concurrent.futures.ThreadPoolExecutor(
-                max_workers=workers
-            ) as ex:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as ex:
                 results = list(ex.map(_fetch, level_unique))
 
-            next_level: List[str] = []
+            next_level: list[str] = []
             for req_str, pkg in results:
                 try:
                     name = Requirement(req_str).name.lower()
@@ -768,9 +746,7 @@ class Resolver:
                             dep_req = Requirement(dep_str)
                         except Exception:
                             continue
-                        if dep_req.marker and not dep_req.marker.evaluate(
-                            environment=env
-                        ):
+                        if dep_req.marker and not dep_req.marker.evaluate(environment=env):
                             continue
                         if dep_req.name.lower() in seen:
                             continue
@@ -793,7 +769,7 @@ class Downloader:
     def __init__(self, http: HTTPClient, max_workers: int = 5):
         self.http = http
         self.max_workers = max(1, max_workers)
-        self._cancelled: Set[str] = set()
+        self._cancelled: set[str] = set()
 
     def cancel(self, filename: str) -> None:
         self._cancelled.add(filename)
@@ -807,18 +783,16 @@ class Downloader:
         target: Target,
         output_dir: str,
         *,
-        on_event: Optional[Callable[..., None]] = None,
+        on_event: Callable[..., None] | None = None,
         verify_sha256: bool = True,
         allow_sdist: bool = True,
-    ) -> List[DownloadResult]:
+    ) -> list[DownloadResult]:
         os.makedirs(output_dir, exist_ok=True)
-        jobs: List[Tuple[PackageInfo, Dict[str, Any]]] = []
-        results: List[DownloadResult] = []
+        jobs: list[tuple[PackageInfo, dict[str, Any]]] = []
+        results: list[DownloadResult] = []
 
         for pkg in packages:
-            dist, kind = select_distribution(
-                pkg.files, target, allow_sdist=allow_sdist
-            )
+            dist, kind = select_distribution(pkg.files, target, allow_sdist=allow_sdist)
             if dist is None:
                 explanation = explain_no_match(pkg.files, target)
                 msg = f"{pkg.name}=={pkg.version}: {explanation}"
@@ -846,9 +820,7 @@ class Downloader:
         if not jobs:
             return results
 
-        with concurrent.futures.ThreadPoolExecutor(
-            max_workers=self.max_workers
-        ) as ex:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=self.max_workers) as ex:
             futures = {
                 ex.submit(
                     self._download_one,
@@ -880,17 +852,15 @@ class Downloader:
     def _download_one(
         self,
         pkg: PackageInfo,
-        wheel: Dict[str, Any],
+        wheel: dict[str, Any],
         output_dir: str,
-        on_event: Optional[Callable[..., None]],
+        on_event: Callable[..., None] | None,
         verify_sha256: bool,
     ) -> DownloadResult:
         filename = wheel["filename"]
         url = wheel["url"]
         dest = os.path.join(output_dir, filename)
-        expected = (wheel.get("digests") or {}).get("sha256") or wheel.get(
-            "sha256_digest"
-        )
+        expected = (wheel.get("digests") or {}).get("sha256") or wheel.get("sha256_digest")
 
         if os.path.exists(dest) and os.path.getsize(dest) > 0:
             if on_event:
@@ -921,9 +891,7 @@ class Downloader:
             return True
 
         try:
-            actual_sha, size = self.http.stream_to_file(
-                url, dest, on_chunk=chunk_cb
-            )
+            actual_sha, size = self.http.stream_to_file(url, dest, on_chunk=chunk_cb)
         except HTTPError as e:
             return DownloadResult(
                 package=pkg.name,
@@ -934,10 +902,8 @@ class Downloader:
             )
 
         if verify_sha256 and expected and actual_sha != expected:
-            try:
+            with contextlib.suppress(OSError):
                 os.unlink(dest)
-            except OSError:
-                pass
             err = f"SHA-256 mismatch (expected {expected}, got {actual_sha})"
             if on_event:
                 on_event("error", package=pkg, filename=filename, message=err)
@@ -979,11 +945,11 @@ class LockEntry:
     version: str
     filename: str
     url: str
-    sha256: Optional[str] = None
+    sha256: str | None = None
     kind: str = "wheel"  # "wheel" | "sdist"
     is_dependency: bool = False
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "name": self.name,
             "version": self.version,
@@ -995,7 +961,7 @@ class LockEntry:
         }
 
     @classmethod
-    def from_dict(cls, d: Dict[str, Any]) -> "LockEntry":
+    def from_dict(cls, d: dict[str, Any]) -> LockEntry:
         return cls(
             name=d["name"],
             version=d["version"],
@@ -1016,25 +982,23 @@ class LockFile:
     """
 
     target: Target
-    packages: List[LockEntry] = field(default_factory=list)
+    packages: list[LockEntry] = field(default_factory=list)
     generated_at: str = ""
     lockfile_version: str = LOCKFILE_VERSION
 
     @classmethod
     def from_resolution(
         cls,
-        resolved: Sequence[Tuple[PackageInfo, bool]],
+        resolved: Sequence[tuple[PackageInfo, bool]],
         target: Target,
         *,
         allow_sdist: bool = True,
-    ) -> "LockFile":
+    ) -> LockFile:
         from datetime import datetime, timezone
 
-        entries: List[LockEntry] = []
+        entries: list[LockEntry] = []
         for pkg, is_dep in resolved:
-            dist, kind = select_distribution(
-                pkg.files, target, allow_sdist=allow_sdist
-            )
+            dist, kind = select_distribution(pkg.files, target, allow_sdist=allow_sdist)
             if dist is None:
                 logger.warning(
                     "skipping %s==%s in lockfile: %s",
@@ -1043,9 +1007,7 @@ class LockFile:
                     explain_no_match(pkg.files, target),
                 )
                 continue
-            sha = (dist.get("digests") or {}).get("sha256") or dist.get(
-                "sha256_digest"
-            )
+            sha = (dist.get("digests") or {}).get("sha256") or dist.get("sha256_digest")
             entries.append(
                 LockEntry(
                     name=pkg.name,
@@ -1073,9 +1035,7 @@ class LockFile:
             },
             "packages": [p.to_dict() for p in self.packages],
         }
-        os.makedirs(
-            os.path.dirname(os.path.abspath(path)) or ".", exist_ok=True
-        )
+        os.makedirs(os.path.dirname(os.path.abspath(path)) or ".", exist_ok=True)
         tmp = path + ".tmp"
         with open(tmp, "w", encoding="utf-8") as f:
             json.dump(payload, f, indent=2, sort_keys=False)
@@ -1083,18 +1043,14 @@ class LockFile:
         os.replace(tmp, path)
 
     @classmethod
-    def read(cls, path: str) -> "LockFile":
-        with open(path, "r", encoding="utf-8") as f:
+    def read(cls, path: str) -> LockFile:
+        with open(path, encoding="utf-8") as f:
             data = json.load(f)
         if data.get("lockfile_version") != LOCKFILE_VERSION:
-            raise ValueError(
-                f"unsupported lockfile version: {data.get('lockfile_version')!r}"
-            )
+            raise ValueError(f"unsupported lockfile version: {data.get('lockfile_version')!r}")
         t = data["target"]
         return cls(
-            target=Target(
-                python_version=t["python_version"], platform=t.get("platform", "any")
-            ),
+            target=Target(python_version=t["python_version"], platform=t.get("platform", "any")),
             packages=[LockEntry.from_dict(d) for d in data.get("packages", [])],
             generated_at=data.get("generated_at", ""),
             lockfile_version=data["lockfile_version"],
@@ -1115,9 +1071,7 @@ def default_config_path() -> str:
     env = os.environ.get("LOCALPIP_CONFIG")
     if env:
         return env
-    xdg = os.environ.get("XDG_CONFIG_HOME") or os.path.join(
-        os.path.expanduser("~"), ".config"
-    )
+    xdg = os.environ.get("XDG_CONFIG_HOME") or os.path.join(os.path.expanduser("~"), ".config")
     xdg_path = os.path.join(xdg, "localpip", "config.json")
     if os.path.exists(xdg_path):
         return xdg_path
@@ -1130,7 +1084,7 @@ def default_config_path() -> str:
 class ConfigManager:
     """JSON config with dot-notation get/set and merge-with-defaults loading."""
 
-    DEFAULT: Dict[str, Any] = {
+    DEFAULT: dict[str, Any] = {
         "network": {
             "pypi_mirrors": ["https://pypi.org/simple/"],
             "timeout": 30,
@@ -1154,12 +1108,12 @@ class ConfigManager:
         self.config_path = config_path
         self.config = self._load()
 
-    def _load(self) -> Dict[str, Any]:
+    def _load(self) -> dict[str, Any]:
         default = json.loads(json.dumps(self.DEFAULT))
         if not os.path.exists(self.config_path):
             return default
         try:
-            with open(self.config_path, "r", encoding="utf-8") as f:
+            with open(self.config_path, encoding="utf-8") as f:
                 loaded = json.load(f)
         except (json.JSONDecodeError, OSError):
             return default
@@ -1175,14 +1129,10 @@ class ConfigManager:
         return self._deep_merge(default, loaded)
 
     @staticmethod
-    def _deep_merge(default: Dict[str, Any], override: Dict[str, Any]) -> Dict[str, Any]:
+    def _deep_merge(default: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
         result = dict(default)
         for k, v in override.items():
-            if (
-                k in result
-                and isinstance(result[k], dict)
-                and isinstance(v, dict)
-            ):
+            if k in result and isinstance(result[k], dict) and isinstance(v, dict):
                 result[k] = ConfigManager._deep_merge(result[k], v)
             else:
                 result[k] = v
@@ -1226,9 +1176,9 @@ class Engine:
     def __init__(
         self,
         config: ConfigManager,
-        target: Optional[Target] = None,
+        target: Target | None = None,
         *,
-        cache: Optional[JsonCache] = None,
+        cache: JsonCache | None = None,
         use_cache: bool = True,
     ):
         self.config = config
@@ -1238,7 +1188,7 @@ class Engine:
         )
         # Use the supplied cache, build a default one, or disable caching.
         if cache is not None:
-            self.cache: Optional[JsonCache] = cache
+            self.cache: JsonCache | None = cache
         elif use_cache and config.get("network.cache_enabled", True):
             self.cache = JsonCache(config.get("network.cache_dir") or None)
         else:
@@ -1250,9 +1200,7 @@ class Engine:
         )
         self.resolver = Resolver(
             http=self.http,
-            mirrors=config.get(
-                "network.pypi_mirrors", ["https://pypi.org/simple/"]
-            ),
+            mirrors=config.get("network.pypi_mirrors", ["https://pypi.org/simple/"]),
             target=self.target,
         )
         self.downloader = Downloader(
@@ -1264,39 +1212,41 @@ class Engine:
         self,
         requirements: Iterable[str],
         *,
-        include_deps: Optional[bool] = None,
-        on_event: Optional[Callable[..., None]] = None,
-    ) -> List[Tuple[PackageInfo, bool]]:
+        include_deps: bool | None = None,
+        on_event: Callable[..., None] | None = None,
+    ) -> list[tuple[PackageInfo, bool]]:
         if include_deps is None:
             include_deps = self.config.get("download.include_dependencies", True)
-        return self.resolver.resolve(
-            requirements, include_deps=include_deps, on_event=on_event
-        )
+        return self.resolver.resolve(requirements, include_deps=include_deps, on_event=on_event)
 
     def download(
         self,
         packages: Sequence[PackageInfo],
-        output_dir: Optional[str] = None,
+        output_dir: str | None = None,
         *,
-        on_event: Optional[Callable[..., None]] = None,
+        on_event: Callable[..., None] | None = None,
         allow_sdist: bool = True,
-    ) -> List[DownloadResult]:
+    ) -> list[DownloadResult]:
         out = output_dir or self.config.get("download.default_path")
         if not out:
             raise ValueError("no output_dir provided and download.default_path not set")
         verify = self.config.get("download.verify_checksums", True)
         return self.downloader.download(
-            packages, self.target, out,
-            on_event=on_event, verify_sha256=verify, allow_sdist=allow_sdist,
+            packages,
+            self.target,
+            out,
+            on_event=on_event,
+            verify_sha256=verify,
+            allow_sdist=allow_sdist,
         )
 
     def download_locked(
         self,
         lock: LockFile,
-        output_dir: Optional[str] = None,
+        output_dir: str | None = None,
         *,
-        on_event: Optional[Callable[..., None]] = None,
-    ) -> List[DownloadResult]:
+        on_event: Callable[..., None] | None = None,
+    ) -> list[DownloadResult]:
         """Download exactly the URLs/sha256s from a LockFile — no resolution.
 
         This is the deterministic path: every entry is fetched by URL and

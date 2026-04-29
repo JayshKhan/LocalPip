@@ -5,8 +5,6 @@ from __future__ import annotations
 import hashlib
 import os
 
-import pytest
-
 from localpip.core import (
     Downloader,
     HTTPClient,
@@ -19,8 +17,12 @@ def _http():
     return HTTPClient(timeout=2, max_retries=1)
 
 
-def _pkg_with_wheel(content: bytes, filename="pkg-1.0-py3-none-any.whl",
-                    url="https://example.com/pkg.whl", sha256=None):
+def _pkg_with_wheel(
+    content: bytes,
+    filename="pkg-1.0-py3-none-any.whl",
+    url="https://example.com/pkg.whl",
+    sha256=None,
+):
     digests = {}
     if sha256:
         digests["sha256"] = sha256
@@ -45,7 +47,9 @@ class TestDownload:
 
         dl = Downloader(_http(), max_workers=1)
         results = dl.download(
-            [_pkg_with_wheel(body)], Target("3.11", "any"), str(tmp_path),
+            [_pkg_with_wheel(body)],
+            Target("3.11", "any"),
+            str(tmp_path),
             verify_sha256=False,
         )
         assert len(results) == 1
@@ -72,8 +76,7 @@ class TestDownload:
         assert results[0].ok
         assert results[0].sha256 == sha
 
-    def test_sha256_mismatch_fails_and_cleans_up(self, tmp_path, url_router,
-                                                   fake_response):
+    def test_sha256_mismatch_fails_and_cleans_up(self, tmp_path, url_router, fake_response):
         body = b"hello world"
         url_router({"https://example.com/pkg.whl": fake_response(body)})
 
@@ -96,7 +99,9 @@ class TestDownload:
         # No url_router → urlopen would fail. But we shouldn't reach it.
         dl = Downloader(_http(), max_workers=1)
         results = dl.download(
-            [_pkg_with_wheel(b"")], Target("3.11", "any"), str(tmp_path),
+            [_pkg_with_wheel(b"")],
+            Target("3.11", "any"),
+            str(tmp_path),
             verify_sha256=False,
         )
         assert results[0].skipped
@@ -104,17 +109,23 @@ class TestDownload:
 
     def test_no_compatible_wheel_records_error(self, tmp_path):
         pkg = PackageInfo(
-            name="pkg", version="1.0",
-            files=[{
-                "filename": "pkg-1.0-cp310-cp310-win_amd64.whl",
-                "url": "https://x.com/p.whl",
-                "packagetype": "bdist_wheel",
-            }],
+            name="pkg",
+            version="1.0",
+            files=[
+                {
+                    "filename": "pkg-1.0-cp310-cp310-win_amd64.whl",
+                    "url": "https://x.com/p.whl",
+                    "packagetype": "bdist_wheel",
+                }
+            ],
         )
         dl = Downloader(_http(), max_workers=1)
         results = dl.download(
-            [pkg], Target("3.11", "manylinux2014_x86_64"),
-            str(tmp_path), verify_sha256=False, allow_sdist=False,
+            [pkg],
+            Target("3.11", "manylinux2014_x86_64"),
+            str(tmp_path),
+            verify_sha256=False,
+            allow_sdist=False,
         )
         assert not results[0].ok
         # New diagnostic mentions tags actually published
@@ -131,8 +142,13 @@ class TestDownload:
             events.append(event)
 
         dl = Downloader(_http(), max_workers=1)
-        dl.download([_pkg_with_wheel(body)], Target("3.11", "any"),
-                    str(tmp_path), on_event=on_event, verify_sha256=False)
+        dl.download(
+            [_pkg_with_wheel(body)],
+            Target("3.11", "any"),
+            str(tmp_path),
+            on_event=on_event,
+            verify_sha256=False,
+        )
         assert "start" in events
         assert "complete" in events
 
@@ -143,19 +159,20 @@ class TestDownload:
         dl = Downloader(_http(), max_workers=1)
         # Cancel before starting; chunk_cb will return False on first event
         dl.cancel("pkg-1.0-py3-none-any.whl")
-        results = dl.download([_pkg_with_wheel(body)], Target("3.11", "any"),
-                              str(tmp_path), verify_sha256=False)
+        results = dl.download(
+            [_pkg_with_wheel(body)], Target("3.11", "any"), str(tmp_path), verify_sha256=False
+        )
         assert not results[0].ok
         # Partial file should not be left behind
         assert not os.path.exists(results[0].path)
 
-    def test_sdist_fallback_when_no_wheel_matches(self, tmp_path, url_router,
-                                                    fake_response):
+    def test_sdist_fallback_when_no_wheel_matches(self, tmp_path, url_router, fake_response):
         body = b"sdist contents"
         url_router({"https://example.com/pkg.tar.gz": fake_response(body)})
 
         pkg = PackageInfo(
-            name="pkg", version="1.0",
+            name="pkg",
+            version="1.0",
             files=[
                 {  # incompatible wheel
                     "filename": "pkg-1.0-cp310-cp310-win_amd64.whl",

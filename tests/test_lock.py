@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
 
 import pytest
 
@@ -82,7 +81,8 @@ class TestLockFileSerialization:
     def test_from_resolution_skips_unmatched(self):
         # Wheel only published for an incompatible platform → skipped (no sdist)
         pkg = PackageInfo(
-            name="badpkg", version="1.0",
+            name="badpkg",
+            version="1.0",
             files=[
                 {
                     "filename": "badpkg-1.0-cp310-cp310-win_amd64.whl",
@@ -93,7 +93,9 @@ class TestLockFileSerialization:
         )
         resolved = [(pkg, False)]
         lock = LockFile.from_resolution(
-            resolved, Target("3.11", "manylinux2014_x86_64"), allow_sdist=False,
+            resolved,
+            Target("3.11", "manylinux2014_x86_64"),
+            allow_sdist=False,
         )
         assert lock.packages == []
 
@@ -105,6 +107,7 @@ class TestEngineDownloadLocked:
         url_router({"https://files/flask.whl": fake_response(body)})
 
         from localpip.core import ConfigManager, Engine
+
         cfg = ConfigManager(str(tmp_path / "cfg.json"))
         engine = Engine(config=cfg, target=Target("3.11", "any"), use_cache=False)
 
@@ -112,7 +115,8 @@ class TestEngineDownloadLocked:
             target=Target("3.11", "any"),
             packages=[
                 LockEntry(
-                    name="flask", version="3.0.0",
+                    name="flask",
+                    version="3.0.0",
                     filename="flask-3.0.0-py3-none-any.whl",
                     url="https://files/flask.whl",
                     sha256=sha,
@@ -130,6 +134,7 @@ class TestEngineDownloadLocked:
         url_router({"https://files/flask.whl": fake_response(body)})
 
         from localpip.core import ConfigManager, Engine
+
         cfg = ConfigManager(str(tmp_path / "cfg.json"))
         engine = Engine(config=cfg, target=Target("3.11", "any"), use_cache=False)
 
@@ -137,7 +142,8 @@ class TestEngineDownloadLocked:
             target=Target("3.11", "any"),
             packages=[
                 LockEntry(
-                    name="flask", version="3.0.0",
+                    name="flask",
+                    version="3.0.0",
                     filename="flask-3.0.0-py3-none-any.whl",
                     url="https://files/flask.whl",
                     sha256="0" * 64,  # wrong

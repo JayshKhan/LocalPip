@@ -42,11 +42,16 @@ class TestParser:
 
     def test_mirror_repeatable(self):
         p = build_parser()
-        args = p.parse_args([
-            "download", "flask",
-            "--mirror", "https://a.org/simple/",
-            "--mirror", "https://b.org/simple/",
-        ])
+        args = p.parse_args(
+            [
+                "download",
+                "flask",
+                "--mirror",
+                "https://a.org/simple/",
+                "--mirror",
+                "https://b.org/simple/",
+            ]
+        )
         assert args.mirror == ["https://a.org/simple/", "https://b.org/simple/"]
 
 
@@ -55,8 +60,8 @@ class TestFormatting:
         assert fmt_bytes(0) == "0 B"
         assert fmt_bytes(512) == "512 B"
         assert fmt_bytes(2048) == "2.0 KiB"
-        assert fmt_bytes(2 * 1024 ** 2) == "2.0 MiB"
-        assert fmt_bytes(int(1.5 * 1024 ** 3)) == "1.50 GiB"
+        assert fmt_bytes(2 * 1024**2) == "2.0 MiB"
+        assert fmt_bytes(int(1.5 * 1024**3)) == "1.50 GiB"
 
 
 class TestInfoCommand:
@@ -66,13 +71,16 @@ class TestInfoCommand:
         rc = main(["info", "nonexistent-pkg-xyz", "--config", cfg])
         assert rc == 1
 
-    def test_info_prints_package(self, tmp_path, capsys, url_router, fake_response,
-                                  pypi_json_response):
-        url_router({
-            "https://pypi.org/pypi/flask/json":
-            fake_response(pypi_json_response(name="flask", version="3.0.0",
-                                              deps=["werkzeug"]))
-        })
+    def test_info_prints_package(
+        self, tmp_path, capsys, url_router, fake_response, pypi_json_response
+    ):
+        url_router(
+            {
+                "https://pypi.org/pypi/flask/json": fake_response(
+                    pypi_json_response(name="flask", version="3.0.0", deps=["werkzeug"])
+                )
+            }
+        )
         cfg = str(tmp_path / "c.json")
         rc = main(["info", "flask", "--config", cfg])
         assert rc == 0
@@ -155,18 +163,29 @@ class TestListAndClean:
 
 
 class TestLockCommand:
-    def test_lock_writes_file(self, tmp_path, url_router, fake_response,
-                                pypi_json_response, capsys):
-        url_router({
-            "https://pypi.org/pypi/flask/json":
-                fake_response(pypi_json_response(name="flask", version="3.0.0")),
-        })
+    def test_lock_writes_file(
+        self, tmp_path, url_router, fake_response, pypi_json_response, capsys
+    ):
+        url_router(
+            {
+                "https://pypi.org/pypi/flask/json": fake_response(
+                    pypi_json_response(name="flask", version="3.0.0")
+                ),
+            }
+        )
         out = str(tmp_path / "lock.json")
-        rc = main([
-            "lock", "flask",
-            "--no-deps", "--config", str(tmp_path / "cfg.json"),
-            "-o", out, "--no-cache",
-        ])
+        rc = main(
+            [
+                "lock",
+                "flask",
+                "--no-deps",
+                "--config",
+                str(tmp_path / "cfg.json"),
+                "-o",
+                out,
+                "--no-cache",
+            ]
+        )
         assert rc == 0
         assert os.path.exists(out)
         with open(out) as f:
@@ -177,16 +196,24 @@ class TestLockCommand:
 
 
 class TestJsonOutput:
-    def test_info_json(self, tmp_path, url_router, fake_response,
-                        pypi_json_response, capsys):
-        url_router({
-            "https://pypi.org/pypi/flask/json":
-                fake_response(pypi_json_response(name="flask", version="3.0.0")),
-        })
-        rc = main([
-            "info", "flask", "--json",
-            "--config", str(tmp_path / "cfg.json"), "--no-cache",
-        ])
+    def test_info_json(self, tmp_path, url_router, fake_response, pypi_json_response, capsys):
+        url_router(
+            {
+                "https://pypi.org/pypi/flask/json": fake_response(
+                    pypi_json_response(name="flask", version="3.0.0")
+                ),
+            }
+        )
+        rc = main(
+            [
+                "info",
+                "flask",
+                "--json",
+                "--config",
+                str(tmp_path / "cfg.json"),
+                "--no-cache",
+            ]
+        )
         assert rc == 0
         payload = json.loads(capsys.readouterr().out)
         assert payload["ok"] is True

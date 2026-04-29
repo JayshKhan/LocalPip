@@ -2,18 +2,11 @@
 
 from __future__ import annotations
 
-from urllib.error import HTTPError, URLError
-
-import pytest
-
 from localpip.core import (
     HTTPClient,
-    HTTPError as LpHTTPError,
-    PackageInfo,
     Resolver,
     Target,
 )
-
 
 PYPI_MIRRORS = ["https://pypi.org/simple/"]
 
@@ -47,15 +40,27 @@ class TestGetPackageInfo:
                 "requires_dist": None,
             },
             "releases": {
-                "2.28.0": [{"filename": "requests-2.28.0-py3-none-any.whl",
-                            "url": "https://x/2.28.whl",
-                            "packagetype": "bdist_wheel"}],
-                "2.31.0": [{"filename": "requests-2.31.0-py3-none-any.whl",
-                            "url": "https://x/2.31.whl",
-                            "packagetype": "bdist_wheel"}],
-                "3.0.0": [{"filename": "requests-3.0.0-py3-none-any.whl",
-                           "url": "https://x/3.0.whl",
-                           "packagetype": "bdist_wheel"}],
+                "2.28.0": [
+                    {
+                        "filename": "requests-2.28.0-py3-none-any.whl",
+                        "url": "https://x/2.28.whl",
+                        "packagetype": "bdist_wheel",
+                    }
+                ],
+                "2.31.0": [
+                    {
+                        "filename": "requests-2.31.0-py3-none-any.whl",
+                        "url": "https://x/2.31.whl",
+                        "packagetype": "bdist_wheel",
+                    }
+                ],
+                "3.0.0": [
+                    {
+                        "filename": "requests-3.0.0-py3-none-any.whl",
+                        "url": "https://x/3.0.whl",
+                        "packagetype": "bdist_wheel",
+                    }
+                ],
             },
         }
         url_router({"https://pypi.org/pypi/requests/json": fake_response(body)})
@@ -71,13 +76,16 @@ class TestGetPackageInfo:
         r = Resolver(_http(), PYPI_MIRRORS, Target("3.11"))
         assert r.get_package_info("nonexistent-pkg-xyz") is None
 
-    def test_falls_through_to_next_mirror(self, monkeypatch, url_router, fake_response,
-                                           pypi_json_response):
+    def test_falls_through_to_next_mirror(
+        self, monkeypatch, url_router, fake_response, pypi_json_response
+    ):
         # First mirror 404s, second succeeds
         body = pypi_json_response(name="flask", version="3.0.0")
-        url_router({
-            "https://second.org/pypi/flask/json": fake_response(body),
-        })
+        url_router(
+            {
+                "https://second.org/pypi/flask/json": fake_response(body),
+            }
+        )
         r = Resolver(
             _http(),
             ["https://first.org/simple/", "https://second.org/simple/"],
@@ -110,17 +118,16 @@ class TestGetPackageInfo:
 
 
 class TestResolveDeps:
-    def test_resolves_root_and_marks_deps(self, url_router, fake_response,
-                                            pypi_json_response):
+    def test_resolves_root_and_marks_deps(self, url_router, fake_response, pypi_json_response):
         # `flask` depends on `werkzeug`
-        flask_body = pypi_json_response(
-            name="flask", version="3.0.0", deps=["werkzeug>=3.0"]
-        )
+        flask_body = pypi_json_response(name="flask", version="3.0.0", deps=["werkzeug>=3.0"])
         wz_body = pypi_json_response(name="werkzeug", version="3.0.1")
-        url_router({
-            "https://pypi.org/pypi/flask/json": fake_response(flask_body),
-            "https://pypi.org/pypi/werkzeug/json": fake_response(wz_body),
-        })
+        url_router(
+            {
+                "https://pypi.org/pypi/flask/json": fake_response(flask_body),
+                "https://pypi.org/pypi/werkzeug/json": fake_response(wz_body),
+            }
+        )
 
         r = Resolver(_http(), PYPI_MIRRORS, Target("3.11"))
         out = r.resolve(["flask"], include_deps=True)
@@ -128,11 +135,10 @@ class TestResolveDeps:
         assert ("flask", False) in names
         assert ("werkzeug", True) in names
 
-    def test_no_deps_skips_dependency_traversal(self, url_router, fake_response,
-                                                  pypi_json_response):
-        flask_body = pypi_json_response(
-            name="flask", version="3.0.0", deps=["werkzeug>=3.0"]
-        )
+    def test_no_deps_skips_dependency_traversal(
+        self, url_router, fake_response, pypi_json_response
+    ):
+        flask_body = pypi_json_response(name="flask", version="3.0.0", deps=["werkzeug>=3.0"])
         url_router({"https://pypi.org/pypi/flask/json": fake_response(flask_body)})
 
         r = Resolver(_http(), PYPI_MIRRORS, Target("3.11"))
@@ -140,8 +146,9 @@ class TestResolveDeps:
         assert len(out) == 1
         assert out[0][0].name.lower() == "flask"
 
-    def test_marker_eval_drops_inapplicable_deps(self, url_router, fake_response,
-                                                   pypi_json_response):
+    def test_marker_eval_drops_inapplicable_deps(
+        self, url_router, fake_response, pypi_json_response
+    ):
         # win32-only dep should be dropped on linux target
         body = pypi_json_response(
             name="multitarget",
@@ -155,8 +162,13 @@ class TestResolveDeps:
         assert out[0][0].name.lower() == "multitarget"
 
     def test_event_callback_fires(self, url_router, fake_response, pypi_json_response):
-        url_router({"https://pypi.org/pypi/flask/json":
-                    fake_response(pypi_json_response(name="flask", version="3.0.0"))})
+        url_router(
+            {
+                "https://pypi.org/pypi/flask/json": fake_response(
+                    pypi_json_response(name="flask", version="3.0.0")
+                )
+            }
+        )
 
         events = []
 
@@ -175,18 +187,22 @@ class TestResolveDeps:
     ):
         # Both root-level packages and their two distinct deps should be fetched
         # in two BFS passes. Make sure we get all 4 in the result set.
-        url_router({
-            "https://pypi.org/pypi/a/json":
-                fake_response(pypi_json_response(name="a", version="1.0",
-                                                  deps=["c"])),
-            "https://pypi.org/pypi/b/json":
-                fake_response(pypi_json_response(name="b", version="1.0",
-                                                  deps=["d"])),
-            "https://pypi.org/pypi/c/json":
-                fake_response(pypi_json_response(name="c", version="1.0")),
-            "https://pypi.org/pypi/d/json":
-                fake_response(pypi_json_response(name="d", version="1.0")),
-        })
+        url_router(
+            {
+                "https://pypi.org/pypi/a/json": fake_response(
+                    pypi_json_response(name="a", version="1.0", deps=["c"])
+                ),
+                "https://pypi.org/pypi/b/json": fake_response(
+                    pypi_json_response(name="b", version="1.0", deps=["d"])
+                ),
+                "https://pypi.org/pypi/c/json": fake_response(
+                    pypi_json_response(name="c", version="1.0")
+                ),
+                "https://pypi.org/pypi/d/json": fake_response(
+                    pypi_json_response(name="d", version="1.0")
+                ),
+            }
+        )
         r = Resolver(_http(), PYPI_MIRRORS, Target("3.11"))
         out = r.resolve(["a", "b"], include_deps=True)
         names = {p.name.lower() for p, _ in out}
@@ -198,16 +214,19 @@ class TestResolveDeps:
 
     def test_dedupes_within_level(self, url_router, fake_response, pypi_json_response):
         # Both roots depend on same `shared` package — should fetch once, not twice
-        url_router({
-            "https://pypi.org/pypi/a/json":
-                fake_response(pypi_json_response(name="a", version="1.0",
-                                                  deps=["shared"])),
-            "https://pypi.org/pypi/b/json":
-                fake_response(pypi_json_response(name="b", version="1.0",
-                                                  deps=["shared"])),
-            "https://pypi.org/pypi/shared/json":
-                fake_response(pypi_json_response(name="shared", version="1.0")),
-        })
+        url_router(
+            {
+                "https://pypi.org/pypi/a/json": fake_response(
+                    pypi_json_response(name="a", version="1.0", deps=["shared"])
+                ),
+                "https://pypi.org/pypi/b/json": fake_response(
+                    pypi_json_response(name="b", version="1.0", deps=["shared"])
+                ),
+                "https://pypi.org/pypi/shared/json": fake_response(
+                    pypi_json_response(name="shared", version="1.0")
+                ),
+            }
+        )
         r = Resolver(_http(), PYPI_MIRRORS, Target("3.11"))
         out = r.resolve(["a", "b"], include_deps=True)
         # 3 unique packages; shared should appear exactly once

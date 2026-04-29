@@ -6,36 +6,61 @@ import threading
 import time
 from dataclasses import dataclass
 from enum import Enum
-from typing import Dict, List, Optional
+from typing import Optional
 
 try:
-    from PyQt5.QtWidgets import (
-        QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
-        QLabel, QLineEdit, QPushButton, QComboBox, QCheckBox, QProgressBar,
-        QFrame, QScrollArea, QStackedWidget, QFileDialog, QMessageBox,
-        QLayout
-    )
     from PyQt5.QtCore import (
-        Qt, QSize, QRect, QPoint, pyqtSignal, QEvent, QObject, QRunnable,
-        QThreadPool, pyqtSlot,
+        QEvent,
+        QObject,
+        QPoint,
+        QRect,
+        QRunnable,
+        QSize,
+        Qt,
+        QThreadPool,
+        pyqtSignal,
+        pyqtSlot,
     )
-    from PyQt5.QtGui import (
-        QFont, QColor, QPainter, QPen, QDragEnterEvent, QDropEvent
+    from PyQt5.QtGui import QColor, QDragEnterEvent, QDropEvent, QFont, QPainter, QPen
+    from PyQt5.QtWidgets import (
+        QApplication,
+        QCheckBox,
+        QComboBox,
+        QFileDialog,
+        QFrame,
+        QHBoxLayout,
+        QLabel,
+        QLayout,
+        QLineEdit,
+        QMainWindow,
+        QMessageBox,
+        QProgressBar,
+        QPushButton,
+        QScrollArea,
+        QStackedWidget,
+        QVBoxLayout,
+        QWidget,
     )
 except ImportError as exc:
     raise SystemExit(
         "PyQt5 is required for the LocalPip GUI. Install with:\n"
         "    pip install localpip[gui]\n"
         f"  (import error: {exc})"
-    )
+    ) from exc
+
+import contextlib
 
 from packaging.requirements import Requirement
 
 from localpip.core import (
-    ConfigManager, Downloader, HTTPClient, PackageInfo, Resolver,
-    Target, select_wheel,
+    ConfigManager,
+    Downloader,
+    HTTPClient,
+    PackageInfo,
+    Resolver,
+    Target,
+    select_wheel,
 )
-
 
 # ── GUI-only data classes / enums ────────────────────────────────────
 
@@ -134,8 +159,8 @@ class GuiDownloadManager(QObject):
     def __init__(self, http: HTTPClient, max_workers: int = 5):
         super().__init__()
         self._downloader = Downloader(http=http, max_workers=max_workers)
-        self.downloads: Dict[str, DownloadItem] = {}
-        self._start_times: Dict[str, float] = {}
+        self.downloads: dict[str, DownloadItem] = {}
+        self._start_times: dict[str, float] = {}
         self._lock = threading.Lock()
         self._active_thread: Optional[threading.Thread] = None
 
@@ -145,7 +170,7 @@ class GuiDownloadManager(QObject):
             self._start_times.clear()
         self._downloader.reset_cancellations()
 
-    def get_queue(self) -> List[DownloadItem]:
+    def get_queue(self) -> list[DownloadItem]:
         with self._lock:
             return list(self.downloads.values())
 
@@ -164,7 +189,8 @@ class GuiDownloadManager(QObject):
         with self._lock:
             item = self.downloads.get(download_id)
         if not item or item.status not in (
-            DownloadStatus.FAILED, DownloadStatus.CANCELLED,
+            DownloadStatus.FAILED,
+            DownloadStatus.CANCELLED,
         ):
             return
         item.status = DownloadStatus.QUEUED
@@ -176,7 +202,7 @@ class GuiDownloadManager(QObject):
 
     def start_batch(
         self,
-        packages: List[PackageInfo],
+        packages: list[PackageInfo],
         target: Target,
         output_dir: str,
         verify_sha256: bool = True,
@@ -232,9 +258,7 @@ class GuiDownloadManager(QObject):
             if elapsed > 0:
                 item.speed = item.downloaded_bytes / elapsed
                 if item.speed > 0 and item.total_bytes:
-                    item.eta = int(
-                        (item.total_bytes - item.downloaded_bytes) / item.speed
-                    )
+                    item.eta = int((item.total_bytes - item.downloaded_bytes) / item.speed)
         elif event == "complete":
             item.status = DownloadStatus.COMPLETED
             item.progress = 100
@@ -253,15 +277,19 @@ class GuiDownloadManager(QObject):
 
     def _run_batch(self, packages, target, output_dir, verify_sha256):
         results = self._downloader.download(
-            packages, target, output_dir,
-            on_event=self._on_event, verify_sha256=verify_sha256,
+            packages,
+            target,
+            output_dir,
+            on_event=self._on_event,
+            verify_sha256=verify_sha256,
         )
         for r in results:
             item = self._find_item(r.filename) if r.filename else None
             if not item:
                 continue
             if r.error and item.status not in (
-                DownloadStatus.FAILED, DownloadStatus.CANCELLED,
+                DownloadStatus.FAILED,
+                DownloadStatus.CANCELLED,
             ):
                 item.status = DownloadStatus.FAILED
                 item.error_message = r.error
@@ -276,18 +304,18 @@ class GuiDownloadManager(QObject):
 
 
 class GuiResolver:
-    def __init__(self, http: HTTPClient, mirrors: List[str], target: Target):
+    def __init__(self, http: HTTPClient, mirrors: list[str], target: Target):
         self.http = http
         self.target = target
         self.mirrors = list(mirrors)
         self.threadpool = QThreadPool()
 
-    def update(self, mirrors: List[str], target: Target):
+    def update(self, mirrors: list[str], target: Target):
         self.mirrors = list(mirrors)
         self.target = target
 
     def get_package_details(
-        self, requirement: str, mirrors: Optional[List[str]] = None
+        self, requirement: str, mirrors: Optional[list[str]] = None
     ) -> Optional[PackageInfo]:
         resolver = Resolver(
             http=self.http,
@@ -347,14 +375,15 @@ def get_mirror_for_package(pkg_name: str):
 
 # ── Helpers ───────────────────────────────────────────────────────────
 
+
 def format_bytes(b):
     if b < 1024:
         return f"{b} B"
-    elif b < 1024 ** 2:
+    elif b < 1024**2:
         return f"{b / 1024:.1f} KB"
-    elif b < 1024 ** 3:
-        return f"{b / 1024 ** 2:.1f} MB"
-    return f"{b / 1024 ** 3:.2f} GB"
+    elif b < 1024**3:
+        return f"{b / 1024**2:.1f} MB"
+    return f"{b / 1024**3:.2f} GB"
 
 
 # ── Theme Definitions ─────────────────────────────────────────────────
@@ -469,103 +498,104 @@ def set_theme(name):
 
 # ── Stylesheet Generator ─────────────────────────────────────────────
 
+
 def generate_stylesheet(t: dict) -> str:
     return f"""
     /* ── Global ── */
     QMainWindow, QWidget#centralWidget {{
-        background-color: {t['bg_primary']};
+        background-color: {t["bg_primary"]};
     }}
     QLabel {{
-        color: {t['text_primary']};
+        color: {t["text_primary"]};
         background: transparent;
     }}
     QLabel[class="page-title"] {{
         font-size: 22px;
         font-weight: 700;
-        color: {t['text_primary']};
+        color: {t["text_primary"]};
     }}
     QLabel[class="page-desc"] {{
         font-size: 13px;
-        color: {t['text_secondary']};
+        color: {t["text_secondary"]};
         margin-bottom: 4px;
     }}
     QLabel[class="section-title"] {{
         font-size: 14px;
         font-weight: 600;
-        color: {t['text_primary']};
+        color: {t["text_primary"]};
         margin-top: 8px;
     }}
     QLabel[class="section-label"] {{
         font-size: 12px;
         font-weight: 600;
-        color: {t['text_secondary']};
+        color: {t["text_secondary"]};
         margin-top: 4px;
     }}
     QLabel[class="card-title"] {{
         font-size: 17px;
         font-weight: 600;
-        color: {t['text_primary']};
+        color: {t["text_primary"]};
     }}
     QLabel[class="hint"] {{
         font-size: 12px;
-        color: {t['text_tertiary']};
+        color: {t["text_tertiary"]};
     }}
     QLabel[class="meta"] {{
         font-size: 12px;
-        color: {t['text_secondary']};
+        color: {t["text_secondary"]};
     }}
     QLabel[class="desc"] {{
         font-size: 13px;
-        color: {t['text_secondary']};
+        color: {t["text_secondary"]};
         padding: 2px 0;
     }}
     QLabel[class="logo"] {{
         font-size: 18px;
         font-weight: 700;
-        color: {t['accent']};
+        color: {t["accent"]};
     }}
     QLabel[class="subtitle"] {{
         font-size: 11px;
-        color: {t['text_tertiary']};
+        color: {t["text_tertiary"]};
         margin-bottom: 8px;
     }}
     QLabel[class="stats"] {{
         font-size: 11px;
-        color: {t['text_tertiary']};
+        color: {t["text_tertiary"]};
         padding: 8px 0;
     }}
     QLabel[class="version-badge"] {{
         font-size: 12px;
-        color: {t['accent']};
-        background-color: {t['accent_subtle']};
+        color: {t["accent"]};
+        background-color: {t["accent_subtle"]};
         padding: 2px 8px;
         border-radius: 8px;
     }}
     QLabel[class="pill"] {{
         font-size: 11px;
-        color: {t['badge_text']};
-        background-color: {t['badge_bg']};
+        color: {t["badge_text"]};
+        background-color: {t["badge_bg"]};
         padding: 3px 10px;
         border-radius: 10px;
     }}
     QLabel[class="staged-name"] {{
         font-size: 13px;
         font-weight: 500;
-        color: {t['text_primary']};
+        color: {t["text_primary"]};
     }}
 
     /* ── Inputs ── */
     QLineEdit {{
-        background-color: {t['bg_input']};
-        border: 1px solid {t['border']};
+        background-color: {t["bg_input"]};
+        border: 1px solid {t["border"]};
         border-radius: 8px;
         padding: 8px 14px;
         font-size: 13px;
-        color: {t['text_primary']};
-        selection-background-color: {t['accent_subtle']};
+        color: {t["text_primary"]};
+        selection-background-color: {t["accent_subtle"]};
     }}
     QLineEdit:focus {{
-        border-color: {t['border_focus']};
+        border-color: {t["border_focus"]};
     }}
     QLineEdit[class="search"] {{
         border-radius: 18px;
@@ -573,16 +603,16 @@ def generate_stylesheet(t: dict) -> str:
         font-size: 14px;
     }}
     QComboBox {{
-        background-color: {t['bg_input']};
-        border: 1px solid {t['border']};
+        background-color: {t["bg_input"]};
+        border: 1px solid {t["border"]};
         border-radius: 8px;
         padding: 6px 12px;
         font-size: 13px;
-        color: {t['text_primary']};
+        color: {t["text_primary"]};
         min-width: 100px;
     }}
     QComboBox:focus {{
-        border-color: {t['border_focus']};
+        border-color: {t["border_focus"]};
     }}
     QComboBox::drop-down {{
         border: none;
@@ -592,159 +622,159 @@ def generate_stylesheet(t: dict) -> str:
         image: none;
         border-left: 4px solid transparent;
         border-right: 4px solid transparent;
-        border-top: 5px solid {t['text_tertiary']};
+        border-top: 5px solid {t["text_tertiary"]};
         margin-right: 8px;
     }}
     QComboBox QAbstractItemView {{
-        background-color: {t['card_bg']};
-        border: 1px solid {t['border']};
+        background-color: {t["card_bg"]};
+        border: 1px solid {t["border"]};
         border-radius: 6px;
-        color: {t['text_primary']};
-        selection-background-color: {t['accent_subtle']};
-        selection-color: {t['text_primary']};
+        color: {t["text_primary"]};
+        selection-background-color: {t["accent_subtle"]};
+        selection-color: {t["text_primary"]};
         padding: 4px;
     }}
     QCheckBox {{
-        color: {t['text_primary']};
+        color: {t["text_primary"]};
         font-size: 13px;
         spacing: 8px;
     }}
     QCheckBox::indicator {{
         width: 18px;
         height: 18px;
-        border: 2px solid {t['border']};
+        border: 2px solid {t["border"]};
         border-radius: 4px;
-        background-color: {t['bg_input']};
+        background-color: {t["bg_input"]};
     }}
     QCheckBox::indicator:checked {{
-        background-color: {t['accent']};
-        border-color: {t['accent']};
+        background-color: {t["accent"]};
+        border-color: {t["accent"]};
     }}
 
     /* ── Buttons ── */
     QPushButton {{
         font-size: 13px;
         font-weight: 500;
-        border: 1px solid {t['border']};
+        border: 1px solid {t["border"]};
         border-radius: 8px;
         padding: 8px 18px;
-        color: {t['text_primary']};
-        background-color: {t['bg_secondary']};
+        color: {t["text_primary"]};
+        background-color: {t["bg_secondary"]};
     }}
     QPushButton:hover {{
-        background-color: {t['bg_tertiary']};
+        background-color: {t["bg_tertiary"]};
     }}
     QPushButton:pressed {{
-        background-color: {t['border']};
+        background-color: {t["border"]};
     }}
     QPushButton:disabled {{
-        color: {t['text_tertiary']};
-        background-color: {t['bg_secondary']};
-        border-color: {t['bg_tertiary']};
+        color: {t["text_tertiary"]};
+        background-color: {t["bg_secondary"]};
+        border-color: {t["bg_tertiary"]};
     }}
     QPushButton[class="accent"] {{
-        background-color: {t['accent']};
-        color: {t['accent_text']};
+        background-color: {t["accent"]};
+        color: {t["accent_text"]};
         border: none;
         border-radius: 8px;
         padding: 10px 24px;
         font-weight: 600;
     }}
     QPushButton[class="accent"]:hover {{
-        background-color: {t['accent_hover']};
+        background-color: {t["accent_hover"]};
     }}
     QPushButton[class="accent"]:pressed {{
-        background-color: {t['accent_pressed']};
+        background-color: {t["accent_pressed"]};
     }}
     QPushButton[class="accent"]:disabled {{
         opacity: 0.5;
-        background-color: {t['bg_tertiary']};
-        color: {t['text_tertiary']};
+        background-color: {t["bg_tertiary"]};
+        color: {t["text_tertiary"]};
     }}
     QPushButton[class="secondary"] {{
         background-color: transparent;
-        border: 1px solid {t['accent']};
-        color: {t['accent']};
+        border: 1px solid {t["accent"]};
+        color: {t["accent"]};
         border-radius: 8px;
         padding: 8px 18px;
     }}
     QPushButton[class="secondary"]:hover {{
-        background-color: {t['accent_subtle']};
+        background-color: {t["accent_subtle"]};
     }}
     QPushButton[class="icon-btn"] {{
         background: transparent;
         border: none;
-        color: {t['text_tertiary']};
+        color: {t["text_tertiary"]};
         font-size: 14px;
         padding: 4px;
         border-radius: 4px;
     }}
     QPushButton[class="icon-btn"]:hover {{
-        background-color: {t['bg_tertiary']};
-        color: {t['text_primary']};
+        background-color: {t["bg_tertiary"]};
+        color: {t["text_primary"]};
     }}
 
     /* ── Progress Bar ── */
     QProgressBar {{
-        background-color: {t['progress_bg']};
+        background-color: {t["progress_bg"]};
         border: none;
         border-radius: 3px;
         text-align: center;
     }}
     QProgressBar::chunk {{
-        background-color: {t['accent']};
+        background-color: {t["accent"]};
         border-radius: 3px;
     }}
 
     /* ── Cards ── */
     QFrame[class="card"] {{
-        background-color: {t['card_bg']};
-        border: 1px solid {t['border']};
+        background-color: {t["card_bg"]};
+        border: 1px solid {t["border"]};
         border-radius: 12px;
         padding: 16px;
     }}
     QFrame[class="download-card"] {{
-        background-color: {t['card_bg']};
-        border: 1px solid {t['border']};
+        background-color: {t["card_bg"]};
+        border: 1px solid {t["border"]};
         border-radius: 8px;
     }}
     QFrame[class="staged-row"] {{
-        background-color: {t['bg_secondary']};
-        border: 1px solid {t['border']};
+        background-color: {t["bg_secondary"]};
+        border: 1px solid {t["border"]};
         border-radius: 6px;
     }}
     QFrame[class="staged-row"]:hover {{
-        background-color: {t['sidebar_hover']};
+        background-color: {t["sidebar_hover"]};
     }}
 
     /* ── Drop Zone ── */
     QFrame[class="drop-zone"] {{
-        background-color: {t['drop_zone_bg']};
-        border: 2px dashed {t['drop_zone_border']};
+        background-color: {t["drop_zone_bg"]};
+        border: 2px dashed {t["drop_zone_border"]};
         border-radius: 12px;
     }}
     QFrame[class="drop-zone"][dragHover="true"] {{
-        border-color: {t['accent']};
-        background-color: {t['accent_subtle']};
+        border-color: {t["accent"]};
+        background-color: {t["accent_subtle"]};
     }}
 
     /* ── Code Block ── */
     QFrame[class="code-block"] {{
-        background-color: {t['code_bg']};
-        border: 1px solid {t['border']};
+        background-color: {t["code_bg"]};
+        border: 1px solid {t["border"]};
         border-radius: 8px;
         padding: 12px;
     }}
     QFrame[class="code-block"] QLabel {{
         font-family: "Menlo", "Consolas", monospace;
         font-size: 12px;
-        color: {t['code_text']};
+        color: {t["code_text"]};
     }}
 
     /* ── Sidebar ── */
     QFrame[class="sidebar"] {{
-        background-color: {t['sidebar_bg']};
-        border-right: 1px solid {t['border']};
+        background-color: {t["sidebar_bg"]};
+        border-right: 1px solid {t["border"]};
     }}
 
     /* ── Scroll Area ── */
@@ -761,7 +791,7 @@ def generate_stylesheet(t: dict) -> str:
         margin: 0;
     }}
     QScrollBar::handle:vertical {{
-        background: {t['scrollbar_handle']};
+        background: {t["scrollbar_handle"]};
         border-radius: 4px;
         min-height: 30px;
     }}
@@ -773,7 +803,7 @@ def generate_stylesheet(t: dict) -> str:
         height: 8px;
     }}
     QScrollBar::handle:horizontal {{
-        background: {t['scrollbar_handle']};
+        background: {t["scrollbar_handle"]};
         border-radius: 4px;
         min-width: 30px;
     }}
@@ -783,17 +813,17 @@ def generate_stylesheet(t: dict) -> str:
 
     /* ── Status Bar ── */
     QStatusBar {{
-        background-color: {t['bg_secondary']};
-        color: {t['text_secondary']};
+        background-color: {t["bg_secondary"]};
+        color: {t["text_secondary"]};
         font-size: 12px;
-        border-top: 1px solid {t['border']};
+        border-top: 1px solid {t["border"]};
     }}
 
     /* ── Tooltip ── */
     QToolTip {{
-        background-color: {t['card_bg']};
-        color: {t['text_primary']};
-        border: 1px solid {t['border']};
+        background-color: {t["card_bg"]};
+        color: {t["text_primary"]};
+        border: 1px solid {t["border"]};
         border-radius: 6px;
         padding: 6px 10px;
         font-size: 12px;
@@ -802,6 +832,7 @@ def generate_stylesheet(t: dict) -> str:
 
 
 # ── FlowLayout ───────────────────────────────────────────────────────
+
 
 class FlowLayout(QLayout):
     """Layout that wraps widgets to the next line when horizontal space runs out."""
@@ -871,8 +902,10 @@ class FlowLayout(QLayout):
 
 # ── Base Components ───────────────────────────────────────────────────
 
+
 class DropZone(QFrame):
     """Drag-and-drop area for requirements.txt files."""
+
     file_dropped = pyqtSignal(str)
 
     def __init__(self, parent=None):
@@ -891,7 +924,7 @@ class DropZone(QFrame):
     def dragEnterEvent(self, event: QDragEnterEvent):
         if event.mimeData().hasUrls():
             for url in event.mimeData().urls():
-                if url.toLocalFile().endswith('.txt'):
+                if url.toLocalFile().endswith(".txt"):
                     event.acceptProposedAction()
                     self.setProperty("dragHover", "true")
                     self.style().unpolish(self)
@@ -909,7 +942,7 @@ class DropZone(QFrame):
         self.style().polish(self)
         for url in event.mimeData().urls():
             path = url.toLocalFile()
-            if path.endswith('.txt'):
+            if path.endswith(".txt"):
                 self.file_dropped.emit(path)
                 return
 
@@ -938,6 +971,7 @@ class CodeBlock(QFrame):
 
 class PackageCard(QFrame):
     """Rich package info display with dependency pills."""
+
     add_to_queue = pyqtSignal(object)
 
     def __init__(self, parent=None):
@@ -1022,6 +1056,7 @@ class PackageCard(QFrame):
 
 class StagedPackageRow(QFrame):
     """Compact row for a staged package."""
+
     remove_clicked = pyqtSignal(str)
 
     def __init__(self, name, version, is_dep=False, parent=None):
@@ -1058,6 +1093,7 @@ class StagedPackageRow(QFrame):
 
 class DownloadItemCard(QFrame):
     """Single download row with progress bar and status."""
+
     cancel_clicked = pyqtSignal()
     retry_clicked = pyqtSignal()
 
@@ -1107,17 +1143,17 @@ class DownloadItemCard(QFrame):
         layout.addWidget(self.progress_bar)
 
     def update_progress(self, d):
-        self.filename_label.setText(d.get('filename', ''))
-        self.progress_bar.setValue(int(d.get('progress', 0)))
+        self.filename_label.setText(d.get("filename", ""))
+        self.progress_bar.setValue(int(d.get("progress", 0)))
 
-        total = d.get('total_bytes', 0)
-        dl = d.get('downloaded_bytes', 0)
+        total = d.get("total_bytes", 0)
+        dl = d.get("downloaded_bytes", 0)
         self.size_label.setText(f"{format_bytes(dl)} / {format_bytes(total)}" if total else "")
 
-        speed = d.get('speed', 0)
+        speed = d.get("speed", 0)
         self.speed_label.setText(f"{format_bytes(speed)}/s" if speed > 0 else "")
 
-        status = d.get('status', DownloadStatus.QUEUED)
+        status = d.get("status", DownloadStatus.QUEUED)
         t = get_theme()
         if status == DownloadStatus.DOWNLOADING:
             self.status_dot.setStyleSheet(f"color: {t['warning']}; background: transparent;")
@@ -1144,8 +1180,10 @@ class DownloadItemCard(QFrame):
 
 # ── Sidebar ───────────────────────────────────────────────────────────
 
+
 class StepIndicator(QWidget):
     """Custom painted numbered step in sidebar."""
+
     clicked = pyqtSignal()
 
     def __init__(self, number, title, subtitle="", parent=None):
@@ -1167,20 +1205,20 @@ class StepIndicator(QWidget):
 
         # Background highlight for active
         if self.active:
-            painter.setBrush(QColor(t['sidebar_active']))
+            painter.setBrush(QColor(t["sidebar_active"]))
             painter.setPen(Qt.NoPen)
             painter.drawRoundedRect(0, 2, self.width(), self.height() - 4, 8, 8)
 
         # Circle
         if self.active:
-            painter.setBrush(QColor(t['accent']))
+            painter.setBrush(QColor(t["accent"]))
             painter.setPen(Qt.NoPen)
         elif self.completed:
-            painter.setBrush(QColor(t['success']))
+            painter.setBrush(QColor(t["success"]))
             painter.setPen(Qt.NoPen)
         else:
             painter.setBrush(Qt.NoBrush)
-            painter.setPen(QPen(QColor(t['border']), 1.5))
+            painter.setPen(QPen(QColor(t["border"]), 1.5))
         painter.drawEllipse(QPoint(cx, cy), r, r)
 
         # Number or checkmark
@@ -1189,7 +1227,7 @@ class StepIndicator(QWidget):
             painter.drawLine(cx - 4, cy, cx - 1, cy + 3)
             painter.drawLine(cx - 1, cy + 3, cx + 5, cy - 3)
         else:
-            tc = QColor(t['accent_text']) if self.active else QColor(t['text_secondary'])
+            tc = QColor(t["accent_text"]) if self.active else QColor(t["text_secondary"])
             painter.setPen(tc)
             f = QFont(FONT_FAMILY, 10, QFont.Bold)
             painter.setFont(f)
@@ -1197,7 +1235,7 @@ class StepIndicator(QWidget):
 
         # Title
         text_x = cx + r + 12
-        tc = QColor(t['text_primary']) if self.active else QColor(t['text_secondary'])
+        tc = QColor(t["text_primary"]) if self.active else QColor(t["text_secondary"])
         painter.setPen(tc)
         weight = QFont.DemiBold if self.active else QFont.Normal
         painter.setFont(QFont(FONT_FAMILY, 12, weight))
@@ -1205,7 +1243,7 @@ class StepIndicator(QWidget):
 
         # Subtitle
         if self.subtitle:
-            painter.setPen(QColor(t['text_tertiary']))
+            painter.setPen(QColor(t["text_tertiary"]))
             painter.setFont(QFont(FONT_FAMILY, 10))
             painter.drawText(text_x, cy + 13, self.subtitle)
 
@@ -1217,6 +1255,7 @@ class StepIndicator(QWidget):
 
 class SidebarWidget(QFrame):
     """Left navigation sidebar with step indicators and stats."""
+
     page_changed = pyqtSignal(int)
 
     def __init__(self, parent=None):
@@ -1275,7 +1314,7 @@ class SidebarWidget(QFrame):
 
     def set_active(self, index):
         for i, step in enumerate(self.steps):
-            step.active = (i == index)
+            step.active = i == index
             step.update()
 
     def set_completed(self, index):
@@ -1288,8 +1327,10 @@ class SidebarWidget(QFrame):
 
 # ── Page 1: Configure ────────────────────────────────────────────────
 
+
 class ConfigurePage(QScrollArea):
     """Target environment, output directory, and network settings."""
+
     continue_clicked = pyqtSignal()
 
     def __init__(self, config_manager, parent=None):
@@ -1306,7 +1347,7 @@ class ConfigurePage(QScrollArea):
         title = QLabel("Configure")
         title.setProperty("class", "page-title")
         layout.addWidget(title)
-        desc = QLabel("Set up your target environment and download preferences.")
+        desc = QLabel("set up your target environment and download preferences.")
         desc.setProperty("class", "page-desc")
         layout.addWidget(desc)
 
@@ -1473,7 +1514,9 @@ class ConfigurePage(QScrollArea):
         self.config.set("download.include_dependencies", self.include_deps.isChecked())
 
     def _browse(self):
-        path = QFileDialog.getExistingDirectory(self, "Select Output Directory", self.output_edit.text())
+        path = QFileDialog.getExistingDirectory(
+            self, "Select Output Directory", self.output_edit.text()
+        )
         if path:
             self.output_edit.setText(path)
             self._update_whl_count()
@@ -1481,16 +1524,22 @@ class ConfigurePage(QScrollArea):
     def _update_whl_count(self):
         path = self.output_edit.text()
         if os.path.isdir(path):
-            count = len([f for f in os.listdir(path) if f.endswith('.whl')])
-            self.whl_count.setText(f"{count} .whl file{'s' if count != 1 else ''} in directory" if count else "Directory is empty")
+            count = len([f for f in os.listdir(path) if f.endswith(".whl")])
+            self.whl_count.setText(
+                f"{count} .whl file{'s' if count != 1 else ''} in directory"
+                if count
+                else "Directory is empty"
+            )
         else:
             self.whl_count.setText("")
 
 
 # ── Page 2: Search & Stage ───────────────────────────────────────────
 
+
 class SearchPage(QWidget):
     """Search for packages, view details, stage for download."""
+
     download_all_clicked = pyqtSignal()
 
     def __init__(self, parent=None):
@@ -1699,15 +1748,17 @@ class SearchPage(QWidget):
 
 # ── Page 3: Downloads ─────────────────────────────────────────────────
 
+
 class DownloadsPage(QWidget):
     """Real-time download progress with individual cards."""
+
     transfer_clicked = pyqtSignal()
 
     def __init__(self, download_manager, parent=None):
         super().__init__(parent)
         self.dm = download_manager
-        self.cards: Dict[str, DownloadItemCard] = {}
-        self.last_update: Dict[str, float] = {}
+        self.cards: dict[str, DownloadItemCard] = {}
+        self.last_update: dict[str, float] = {}
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(40, 32, 40, 32)
@@ -1761,8 +1812,12 @@ class DownloadsPage(QWidget):
 
     def _on_progress(self, download_id, progress_dict):
         now = time.time()
-        status = progress_dict.get('status', DownloadStatus.QUEUED)
-        is_terminal = status in (DownloadStatus.COMPLETED, DownloadStatus.FAILED, DownloadStatus.CANCELLED)
+        status = progress_dict.get("status", DownloadStatus.QUEUED)
+        is_terminal = status in (
+            DownloadStatus.COMPLETED,
+            DownloadStatus.FAILED,
+            DownloadStatus.CANCELLED,
+        )
 
         if not is_terminal:
             if now - self.last_update.get(download_id, 0) < 0.1:
@@ -1786,7 +1841,9 @@ class DownloadsPage(QWidget):
             return
         total = len(queue)
         completed = sum(1 for item in queue if item.status == DownloadStatus.COMPLETED)
-        failed = sum(1 for item in queue if item.status in (DownloadStatus.FAILED, DownloadStatus.CANCELLED))
+        failed = sum(
+            1 for item in queue if item.status in (DownloadStatus.FAILED, DownloadStatus.CANCELLED)
+        )
         total_bytes = sum(item.total_bytes for item in queue)
         dl_bytes = sum(item.downloaded_bytes for item in queue)
         speed = sum(item.speed for item in queue if item.status == DownloadStatus.DOWNLOADING)
@@ -1803,7 +1860,8 @@ class DownloadsPage(QWidget):
         self.stats_label.setText("  \u2022  ".join(parts))
 
         all_done = all(
-            item.status in (DownloadStatus.COMPLETED, DownloadStatus.FAILED, DownloadStatus.CANCELLED)
+            item.status
+            in (DownloadStatus.COMPLETED, DownloadStatus.FAILED, DownloadStatus.CANCELLED)
             for item in queue
         )
         if all_done and total > 0:
@@ -1821,8 +1879,10 @@ class DownloadsPage(QWidget):
 
 # ── Page 4: Transfer ──────────────────────────────────────────────────
 
+
 class TransferPage(QScrollArea):
     """Summary, pip install command, and file listing."""
+
     new_download_clicked = pyqtSignal()
 
     def __init__(self, parent=None):
@@ -1839,7 +1899,9 @@ class TransferPage(QScrollArea):
         title = QLabel("Transfer")
         title.setProperty("class", "page-title")
         layout.addWidget(title)
-        desc = QLabel("Your packages are ready. Copy the folder to the offline machine and run the install command.")
+        desc = QLabel(
+            "Your packages are ready. Copy the folder to the offline machine and run the install command."
+        )
         desc.setWordWrap(True)
         desc.setProperty("class", "page-desc")
         layout.addWidget(desc)
@@ -1916,7 +1978,7 @@ class TransferPage(QScrollArea):
         total_size = 0
         if os.path.isdir(output_path):
             for f in sorted(os.listdir(output_path)):
-                if f.endswith('.whl'):
+                if f.endswith(".whl"):
                     fpath = os.path.join(output_path, f)
                     size = os.path.getsize(fpath)
                     whl_files.append((f, size))
@@ -1928,16 +1990,16 @@ class TransferPage(QScrollArea):
         )
 
         # Generate pip install command
-        cmd = f"pip install --no-index --find-links \"{output_path}\""
+        cmd = f'pip install --no-index --find-links "{output_path}"'
         if staged_names:
             cmd += " " + " ".join(sorted(staged_names))
         else:
             # Fallback: list wheel filenames
             names = set()
             for f, _ in whl_files:
-                parts = f.split('-')
+                parts = f.split("-")
                 if parts:
-                    names.add(parts[0].replace('_', '-'))
+                    names.add(parts[0].replace("_", "-"))
             cmd += " " + " ".join(sorted(names))
         self.code_block.set_code(cmd)
 
@@ -1963,6 +2025,7 @@ class TransferPage(QScrollArea):
 
 # ── MainWindow ────────────────────────────────────────────────────────
 
+
 class MainWindow(QMainWindow):
     """Primary application window with sidebar navigation and 4 pages."""
 
@@ -1987,7 +2050,7 @@ class MainWindow(QMainWindow):
             max_workers=self.config_manager.get("network.max_concurrent", 5),
         )
 
-        self.staged_packages: Dict[str, StagedPackage] = {}
+        self.staged_packages: dict[str, StagedPackage] = {}
         self.processed_packages: set = set()
         self._resolving = False
 
@@ -2112,9 +2175,7 @@ class MainWindow(QMainWindow):
             pkg_name = query.lower()
         mirror_url = get_mirror_for_package(pkg_name)
         if mirror_url and not self.search_page.has_extra_mirror(mirror_url):
-            self.search_page._add_extra_mirror(
-                mirror_url, f"Auto-added for {pkg_name}"
-            )
+            self.search_page._add_extra_mirror(mirror_url, f"Auto-added for {pkg_name}")
 
         self.search_page.search_btn.setEnabled(False)
         self.search_page.set_resolution_status(f"Searching for {query}...")
@@ -2171,12 +2232,12 @@ class MainWindow(QMainWindow):
 
     def _import_file(self, file_path):
         try:
-            with open(file_path, 'r') as f:
+            with open(file_path) as f:
                 content = f.read()
             packages = []
             for line in content.splitlines():
                 line = line.strip()
-                if not line or line.startswith('#') or line.startswith('-'):
+                if not line or line.startswith("#") or line.startswith("-"):
                     continue
                 packages.append(line)
             if not packages:
@@ -2193,7 +2254,7 @@ class MainWindow(QMainWindow):
         except Exception as e:
             QMessageBox.critical(self, "Import Error", f"Failed to read file: {e}")
 
-    def _resolve_work(self, initial_packages: List[str]):
+    def _resolve_work(self, initial_packages: list[str]):
         """Worker thread: drive core.Resolver, post staging events to main thread."""
         mirrors = self._get_all_mirrors()
         # Auto-extend mirrors with any package-specific extras (torch, nvidia, …)
@@ -2212,10 +2273,8 @@ class MainWindow(QMainWindow):
 
         roots = set()
         for name in initial_packages:
-            try:
+            with contextlib.suppress(Exception):
                 roots.add(Requirement(name).name.lower())
-            except Exception:
-                pass
 
         def on_event(event, **kw):
             if event == "resolving":
@@ -2232,9 +2291,7 @@ class MainWindow(QMainWindow):
                         PackageStagedEvent(pkg, kw.get("is_dependency", False)),
                     )
             elif event == "not_found":
-                QApplication.instance().postEvent(
-                    self, PackageNotFoundEvent(kw["requirement"])
-                )
+                QApplication.instance().postEvent(self, PackageNotFoundEvent(kw["requirement"]))
 
         core_resolver = Resolver(self._http, mirrors, target)
         # Skip already-processed packages by reusing seen set semantics
@@ -2246,13 +2303,9 @@ class MainWindow(QMainWindow):
                 on_event=on_event,
             )
         except Exception as e:
-            QApplication.instance().postEvent(
-                self, StatusUpdateEvent(f"Resolution error: {e}")
-            )
+            QApplication.instance().postEvent(self, StatusUpdateEvent(f"Resolution error: {e}"))
 
-        QApplication.instance().postEvent(
-            self, StatusUpdateEvent("Resolution complete.")
-        )
+        QApplication.instance().postEvent(self, StatusUpdateEvent("Resolution complete."))
 
     def customEvent(self, event):
         if event.type() == PackageFoundEvent.EVENT_TYPE:
@@ -2305,7 +2358,9 @@ class MainWindow(QMainWindow):
         self.config_manager.save()
         output_dir = self.configure_page.output_edit.text()
         if not output_dir:
-            QMessageBox.warning(self, "Error", "Please set an output directory on the Configure page.")
+            QMessageBox.warning(
+                self, "Error", "Please set an output directory on the Configure page."
+            )
             return
         os.makedirs(output_dir, exist_ok=True)
 
@@ -2318,7 +2373,10 @@ class MainWindow(QMainWindow):
 
         packages = [staged.package_info for staged in self.staged_packages.values()]
         self.download_manager.start_batch(
-            packages, target, output_dir, verify_sha256=verify,
+            packages,
+            target,
+            output_dir,
+            verify_sha256=verify,
         )
 
         self._go_to_page(2)
@@ -2329,8 +2387,7 @@ class MainWindow(QMainWindow):
     def _on_transfer(self):
         output_dir = self.configure_page.output_edit.text()
         root_names = {
-            s.package_info.name for s in self.staged_packages.values()
-            if not s.is_dependency
+            s.package_info.name for s in self.staged_packages.values() if not s.is_dependency
         }
         self.transfer_page.populate(output_dir, root_names)
         self._go_to_page(3)
@@ -2369,6 +2426,7 @@ class MainWindow(QMainWindow):
 
 
 # ── Entry Point ───────────────────────────────────────────────────────
+
 
 def main(argv=None):
     if argv is None:
