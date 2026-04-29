@@ -2183,9 +2183,7 @@ class MainWindow(QMainWindow):
         self._search_debounce.setSingleShot(True)
         self._search_debounce.setInterval(250)
         self._search_debounce.timeout.connect(self._on_search)
-        self.search_page.search_bar.textChanged.connect(
-            self._on_search_text_changed
-        )
+        self.search_page.search_bar.textChanged.connect(self._on_search_text_changed)
         self.search_page.import_btn.clicked.connect(self._on_import)
         self.search_page.drop_zone.file_dropped.connect(self._on_file_dropped)
         self.search_page.package_card.add_to_queue.connect(self._on_add_to_queue)
