@@ -112,10 +112,14 @@ class TestDownload:
             }],
         )
         dl = Downloader(_http(), max_workers=1)
-        results = dl.download([pkg], Target("3.11", "manylinux2014_x86_64"),
-                              str(tmp_path), verify_sha256=False)
+        results = dl.download(
+            [pkg], Target("3.11", "manylinux2014_x86_64"),
+            str(tmp_path), verify_sha256=False, allow_sdist=False,
+        )
         assert not results[0].ok
-        assert "no compatible wheel" in results[0].error
+        # New diagnostic mentions tags actually published
+        assert "no wheel matches" in results[0].error
+        assert "cp310-cp310-win_amd64" in results[0].error
 
     def test_event_callbacks_fire(self, tmp_path, url_router, fake_response):
         body = b"chunk" * 50
@@ -144,3 +148,41 @@ class TestDownload:
         assert not results[0].ok
         # Partial file should not be left behind
         assert not os.path.exists(results[0].path)
+
+    def test_sdist_fallback_when_no_wheel_matches(self, tmp_path, url_router,
+                                                    fake_response):
+        body = b"sdist contents"
+        url_router({"https://example.com/pkg.tar.gz": fake_response(body)})
+
+        pkg = PackageInfo(
+            name="pkg", version="1.0",
+            files=[
+                {  # incompatible wheel
+                    "filename": "pkg-1.0-cp310-cp310-win_amd64.whl",
+                    "url": "https://example.com/pkg.whl",
+                    "packagetype": "bdist_wheel",
+                },
+                {  # sdist fallback
+                    "filename": "pkg-1.0.tar.gz",
+                    "url": "https://example.com/pkg.tar.gz",
+                    "packagetype": "sdist",
+                },
+            ],
+        )
+        events = []
+
+        def on_event(event, **kw):
+            events.append(event)
+
+        dl = Downloader(_http(), max_workers=1)
+        results = dl.download(
+            [pkg],
+            Target("3.11", "manylinux2014_x86_64"),
+            str(tmp_path),
+            on_event=on_event,
+            verify_sha256=False,
+            allow_sdist=True,
+        )
+        assert results[0].ok
+        assert results[0].filename == "pkg-1.0.tar.gz"
+        assert "sdist_fallback" in events

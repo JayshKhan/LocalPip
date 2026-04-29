@@ -4,7 +4,14 @@ from __future__ import annotations
 
 import pytest
 
-from localpip.core import Target, compatible_tags, select_wheel
+from localpip.core import (
+    Target,
+    compatible_tags,
+    explain_no_match,
+    pick_sdist,
+    select_distribution,
+    select_wheel,
+)
 
 
 def make_files(*filenames):
@@ -143,3 +150,69 @@ class TestCompatibleTagsHelper:
     def test_any_platform_has_short_tag_list(self):
         tags = compatible_tags(Target("3.11", "any"))
         assert all(t.platform == "any" for t in tags)
+
+
+class TestSdistFallback:
+    def _sdist(self):
+        return {
+            "filename": "pkg-1.0.tar.gz",
+            "url": "https://x.com/pkg.tar.gz",
+            "packagetype": "sdist",
+        }
+
+    def test_pick_sdist_finds_tarball(self):
+        out = pick_sdist([self._sdist()])
+        assert out is not None
+        assert out["filename"] == "pkg-1.0.tar.gz"
+
+    def test_pick_sdist_returns_none_when_only_wheels(self):
+        files = make_files("pkg-1.0-py3-none-any.whl")
+        assert pick_sdist(files) is None
+
+    def test_select_distribution_prefers_wheel(self):
+        files = make_files("pkg-1.0-py3-none-any.whl") + [self._sdist()]
+        dist, kind = select_distribution(files, Target("3.11", "any"))
+        assert kind == "wheel"
+        assert dist["filename"].endswith(".whl")
+
+    def test_select_distribution_falls_back_to_sdist(self):
+        files = make_files("pkg-1.0-cp310-cp310-win_amd64.whl") + [self._sdist()]
+        dist, kind = select_distribution(
+            files, Target("3.11", "manylinux2014_x86_64")
+        )
+        assert kind == "sdist"
+        assert dist["filename"] == "pkg-1.0.tar.gz"
+
+    def test_select_distribution_disable_sdist(self):
+        files = [self._sdist()]
+        dist, kind = select_distribution(
+            files, Target("3.11", "any"), allow_sdist=False
+        )
+        assert dist is None
+        assert kind == "none"
+
+
+class TestExplainNoMatch:
+    def test_lists_published_tags(self):
+        files = make_files(
+            "pkg-1.0-cp310-cp310-win_amd64.whl",
+            "pkg-1.0-cp310-cp310-manylinux1_x86_64.whl",
+        )
+        msg = explain_no_match(files, Target("3.11", "any"))
+        assert "no wheel matches" in msg
+        assert "py3.11" in msg
+        assert "cp310-cp310-win_amd64" in msg
+
+    def test_no_wheels_only_sdist(self):
+        files = [{
+            "filename": "pkg-1.0.tar.gz",
+            "url": "https://x.com/p.tar.gz",
+            "packagetype": "sdist",
+        }]
+        msg = explain_no_match(files, Target("3.11", "any"))
+        assert "sdist" in msg
+        assert "must be built" in msg
+
+    def test_nothing_published(self):
+        msg = explain_no_match([], Target("3.11", "any"))
+        assert "no wheels" in msg.lower()

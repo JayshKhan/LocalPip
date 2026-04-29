@@ -169,3 +169,47 @@ class TestResolveDeps:
         assert "resolving" in kinds
         assert "resolved" in kinds
         assert kinds[-1] == "done"
+
+    def test_concurrent_resolve_fetches_level_in_parallel(
+        self, url_router, fake_response, pypi_json_response
+    ):
+        # Both root-level packages and their two distinct deps should be fetched
+        # in two BFS passes. Make sure we get all 4 in the result set.
+        url_router({
+            "https://pypi.org/pypi/a/json":
+                fake_response(pypi_json_response(name="a", version="1.0",
+                                                  deps=["c"])),
+            "https://pypi.org/pypi/b/json":
+                fake_response(pypi_json_response(name="b", version="1.0",
+                                                  deps=["d"])),
+            "https://pypi.org/pypi/c/json":
+                fake_response(pypi_json_response(name="c", version="1.0")),
+            "https://pypi.org/pypi/d/json":
+                fake_response(pypi_json_response(name="d", version="1.0")),
+        })
+        r = Resolver(_http(), PYPI_MIRRORS, Target("3.11"))
+        out = r.resolve(["a", "b"], include_deps=True)
+        names = {p.name.lower() for p, _ in out}
+        assert names == {"a", "b", "c", "d"}
+        roots = {p.name.lower() for p, is_dep in out if not is_dep}
+        deps = {p.name.lower() for p, is_dep in out if is_dep}
+        assert roots == {"a", "b"}
+        assert deps == {"c", "d"}
+
+    def test_dedupes_within_level(self, url_router, fake_response, pypi_json_response):
+        # Both roots depend on same `shared` package — should fetch once, not twice
+        url_router({
+            "https://pypi.org/pypi/a/json":
+                fake_response(pypi_json_response(name="a", version="1.0",
+                                                  deps=["shared"])),
+            "https://pypi.org/pypi/b/json":
+                fake_response(pypi_json_response(name="b", version="1.0",
+                                                  deps=["shared"])),
+            "https://pypi.org/pypi/shared/json":
+                fake_response(pypi_json_response(name="shared", version="1.0")),
+        })
+        r = Resolver(_http(), PYPI_MIRRORS, Target("3.11"))
+        out = r.resolve(["a", "b"], include_deps=True)
+        # 3 unique packages; shared should appear exactly once
+        names = [p.name.lower() for p, _ in out]
+        assert names.count("shared") == 1
