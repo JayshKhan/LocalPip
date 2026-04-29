@@ -967,7 +967,164 @@ class Downloader:
         )
 
 
+# ── Lock files (reproducible installs) ──────────────────────────────
+
+
+LOCKFILE_VERSION = "1"
+
+
+@dataclass
+class LockEntry:
+    name: str
+    version: str
+    filename: str
+    url: str
+    sha256: Optional[str] = None
+    kind: str = "wheel"  # "wheel" | "sdist"
+    is_dependency: bool = False
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "name": self.name,
+            "version": self.version,
+            "kind": self.kind,
+            "filename": self.filename,
+            "url": self.url,
+            "sha256": self.sha256,
+            "is_dependency": self.is_dependency,
+        }
+
+    @classmethod
+    def from_dict(cls, d: Dict[str, Any]) -> "LockEntry":
+        return cls(
+            name=d["name"],
+            version=d["version"],
+            filename=d["filename"],
+            url=d["url"],
+            sha256=d.get("sha256"),
+            kind=d.get("kind", "wheel"),
+            is_dependency=bool(d.get("is_dependency", False)),
+        )
+
+
+@dataclass
+class LockFile:
+    """Pinned set of packages for a (python_version, platform) target.
+
+    Persisted as JSON; consumed by `Engine.download_locked` for reproducible
+    offline installs.
+    """
+
+    target: Target
+    packages: List[LockEntry] = field(default_factory=list)
+    generated_at: str = ""
+    lockfile_version: str = LOCKFILE_VERSION
+
+    @classmethod
+    def from_resolution(
+        cls,
+        resolved: Sequence[Tuple[PackageInfo, bool]],
+        target: Target,
+        *,
+        allow_sdist: bool = True,
+    ) -> "LockFile":
+        from datetime import datetime, timezone
+
+        entries: List[LockEntry] = []
+        for pkg, is_dep in resolved:
+            dist, kind = select_distribution(
+                pkg.files, target, allow_sdist=allow_sdist
+            )
+            if dist is None:
+                logger.warning(
+                    "skipping %s==%s in lockfile: %s",
+                    pkg.name,
+                    pkg.version,
+                    explain_no_match(pkg.files, target),
+                )
+                continue
+            sha = (dist.get("digests") or {}).get("sha256") or dist.get(
+                "sha256_digest"
+            )
+            entries.append(
+                LockEntry(
+                    name=pkg.name,
+                    version=pkg.version,
+                    filename=dist["filename"],
+                    url=dist["url"],
+                    sha256=sha,
+                    kind=kind,
+                    is_dependency=is_dep,
+                )
+            )
+        return cls(
+            target=target,
+            packages=entries,
+            generated_at=datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        )
+
+    def write(self, path: str) -> None:
+        payload = {
+            "lockfile_version": self.lockfile_version,
+            "generated_at": self.generated_at,
+            "target": {
+                "python_version": self.target.python_version,
+                "platform": self.target.platform,
+            },
+            "packages": [p.to_dict() for p in self.packages],
+        }
+        os.makedirs(
+            os.path.dirname(os.path.abspath(path)) or ".", exist_ok=True
+        )
+        tmp = path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(payload, f, indent=2, sort_keys=False)
+            f.write("\n")
+        os.replace(tmp, path)
+
+    @classmethod
+    def read(cls, path: str) -> "LockFile":
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        if data.get("lockfile_version") != LOCKFILE_VERSION:
+            raise ValueError(
+                f"unsupported lockfile version: {data.get('lockfile_version')!r}"
+            )
+        t = data["target"]
+        return cls(
+            target=Target(
+                python_version=t["python_version"], platform=t.get("platform", "any")
+            ),
+            packages=[LockEntry.from_dict(d) for d in data.get("packages", [])],
+            generated_at=data.get("generated_at", ""),
+            lockfile_version=data["lockfile_version"],
+        )
+
+
 # ── Config (JSON, dot-notation) ─────────────────────────────────────
+
+
+def default_config_path() -> str:
+    """Resolve the user's preferred config location.
+
+    Order: $LOCALPIP_CONFIG env > $XDG_CONFIG_HOME/localpip/config.json >
+    ~/.config/localpip/config.json > ./config.json (legacy).
+    Returns the first existing path, otherwise the XDG-preferred path
+    (which the caller can write into).
+    """
+    env = os.environ.get("LOCALPIP_CONFIG")
+    if env:
+        return env
+    xdg = os.environ.get("XDG_CONFIG_HOME") or os.path.join(
+        os.path.expanduser("~"), ".config"
+    )
+    xdg_path = os.path.join(xdg, "localpip", "config.json")
+    if os.path.exists(xdg_path):
+        return xdg_path
+    legacy = os.path.join(os.getcwd(), "config.json")
+    if os.path.exists(legacy):
+        return legacy
+    return xdg_path
 
 
 class ConfigManager:
@@ -1122,11 +1279,56 @@ class Engine:
         output_dir: Optional[str] = None,
         *,
         on_event: Optional[Callable[..., None]] = None,
+        allow_sdist: bool = True,
     ) -> List[DownloadResult]:
         out = output_dir or self.config.get("download.default_path")
         if not out:
             raise ValueError("no output_dir provided and download.default_path not set")
         verify = self.config.get("download.verify_checksums", True)
         return self.downloader.download(
-            packages, self.target, out, on_event=on_event, verify_sha256=verify
+            packages, self.target, out,
+            on_event=on_event, verify_sha256=verify, allow_sdist=allow_sdist,
+        )
+
+    def download_locked(
+        self,
+        lock: LockFile,
+        output_dir: Optional[str] = None,
+        *,
+        on_event: Optional[Callable[..., None]] = None,
+    ) -> List[DownloadResult]:
+        """Download exactly the URLs/sha256s from a LockFile — no resolution.
+
+        This is the deterministic path: every entry is fetched by URL and
+        verified against its pinned sha256.
+        """
+        out = output_dir or self.config.get("download.default_path")
+        if not out:
+            raise ValueError("no output_dir provided and download.default_path not set")
+        os.makedirs(out, exist_ok=True)
+
+        # Adapt LockEntries into the file-dict shape Downloader expects so we
+        # can reuse the same concurrent download machinery.
+        synthetic_packages = []
+        for entry in lock.packages:
+            file_dict = {
+                "filename": entry.filename,
+                "url": entry.url,
+                "packagetype": "bdist_wheel" if entry.kind == "wheel" else "sdist",
+                "digests": {"sha256": entry.sha256} if entry.sha256 else {},
+            }
+            synthetic_packages.append(
+                PackageInfo(
+                    name=entry.name,
+                    version=entry.version,
+                    files=[file_dict],
+                )
+            )
+        return self.downloader.download(
+            synthetic_packages,
+            lock.target,
+            out,
+            on_event=on_event,
+            verify_sha256=True,
+            allow_sdist=True,
         )
