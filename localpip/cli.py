@@ -7,6 +7,9 @@ Usage:
     localpip lock <pkg> [-o lock.json]     resolve and write a pinned lockfile
     localpip info <pkg>                    show package info
     localpip resolve <pkg>                 resolve and print the dep graph
+    localpip pack VENV -o env.tar.gz       archive a pip/venv environment
+    localpip unpack env.tar.gz -d VENV     extract and repair a packed environment
+    localpip verify env.tar.gz             verify a packed environment archive
     localpip list [DIR]                    list wheels already in DIR
     localpip clean [DIR]                   remove .part files / corrupt wheels
     localpip gui                           launch the GUI (needs PyQt5)
@@ -45,6 +48,7 @@ from localpip.core import (
     select_distribution,
     select_wheel,
 )
+from localpip.pack import PackError, pack_environment, unpack_archive, verify_archive
 
 # ── Progress / formatting ─────────────────────────────────────────────
 
@@ -213,13 +217,33 @@ def _build_engine(args: argparse.Namespace) -> Engine:
 
 def _read_requirements_file(path: str) -> list[str]:
     out: list[str] = []
+    continued = ""
     with open(path, encoding="utf-8") as f:
         for raw in f:
-            line = raw.strip()
+            line = raw.rstrip("\n")
+            if continued:
+                line = continued + line.lstrip()
+                continued = ""
+            if line.rstrip().endswith("\\"):
+                continued = line.rstrip()[:-1].strip() + " "
+                continue
+            line = _strip_requirement_comment(line).strip()
             if not line or line.startswith("#") or line.startswith("-"):
                 continue
             out.append(line)
+    if continued:
+        line = _strip_requirement_comment(continued).strip()
+        if line and not line.startswith("-"):
+            out.append(line)
     return out
+
+
+def _strip_requirement_comment(line: str) -> str:
+    """Strip requirements-file comments while preserving URL fragments."""
+    for idx, char in enumerate(line):
+        if char == "#" and (idx == 0 or line[idx - 1].isspace()):
+            return line[:idx].rstrip()
+    return line
 
 
 def _gather_requirements(args: argparse.Namespace) -> list[str]:
@@ -683,6 +707,103 @@ def cmd_resolve(args: argparse.Namespace) -> int:
     return 0 if resolved else 1
 
 
+def cmd_pack(args: argparse.Namespace) -> int:
+    json_mode = getattr(args, "json_output", False)
+    try:
+        result = pack_environment(
+            args.environment,
+            args.output,
+            archive_format=args.format,
+            exclude=args.exclude,
+        )
+    except PackError as e:
+        if json_mode:
+            json.dump({"ok": False, "error": str(e)}, sys.stdout)
+            sys.stdout.write("\n")
+        else:
+            print(f"error: {e}", file=sys.stderr)
+        return 1
+
+    if json_mode:
+        json.dump(
+            {
+                "ok": True,
+                "archive": result.archive_path,
+                "file_count": result.file_count,
+                "size": result.size,
+                "packages": result.manifest.get("packages", []),
+            },
+            sys.stdout,
+            indent=2,
+        )
+        sys.stdout.write("\n")
+        return 0
+
+    print(f"Packed {result.file_count} file(s) into {result.archive_path}")
+    print(f"  size:     {fmt_bytes(result.size)}")
+    print(f"  packages: {len(result.manifest.get('packages', []))}")
+    if result.manifest.get("relocatable_scripts"):
+        print(f"  scripts:  {len(result.manifest['relocatable_scripts'])} repairable")
+    return 0
+
+
+def cmd_unpack(args: argparse.Namespace) -> int:
+    json_mode = getattr(args, "json_output", False)
+    try:
+        result = unpack_archive(args.archive, args.destination, force=args.force)
+    except PackError as e:
+        if json_mode:
+            json.dump({"ok": False, "error": str(e)}, sys.stdout)
+            sys.stdout.write("\n")
+        else:
+            print(f"error: {e}", file=sys.stderr)
+        return 1
+
+    if json_mode:
+        json.dump(
+            {
+                "ok": True,
+                "destination": result.destination,
+                "file_count": result.file_count,
+                "repaired": result.repaired,
+            },
+            sys.stdout,
+            indent=2,
+        )
+        sys.stdout.write("\n")
+        return 0
+
+    print(f"Unpacked {result.file_count} file(s) to {result.destination}")
+    print(f"  repaired scripts: {len(result.repaired)}")
+    return 0
+
+
+def cmd_verify_pack(args: argparse.Namespace) -> int:
+    result = verify_archive(args.archive, destination=args.destination)
+    json_mode = getattr(args, "json_output", False)
+    if json_mode:
+        json.dump(
+            {
+                "ok": result.ok,
+                "file_count": result.file_count,
+                "errors": result.errors,
+                "warnings": result.warnings,
+            },
+            sys.stdout,
+            indent=2,
+        )
+        sys.stdout.write("\n")
+        return 0 if result.ok else 1
+
+    if result.ok:
+        print(f"Archive verified: {args.archive} ({result.file_count} file(s))")
+        return 0
+    print(f"Archive verification failed: {args.archive}", file=sys.stderr)
+    for err in result.errors or []:
+        print(f"  - {err}", file=sys.stderr)
+    return 1
+
+
 def cmd_gui(args: argparse.Namespace) -> int:
     try:
         from localpip.gui import main as gui_main
@@ -807,6 +928,64 @@ def build_parser() -> argparse.ArgumentParser:
     res.add_argument("--no-deps", action="store_true")
     _add_engine_args(res)
     res.set_defaults(func=cmd_resolve)
+
+    # pack
+    pack = sub.add_parser("pack", help="archive a pip/venv environment for relocation")
+    pack.add_argument("environment", help="virtual environment directory to pack")
+    pack.add_argument("-o", "--output", required=True, help="archive path (.tar.gz, .tgz, or .zip)")
+    pack.add_argument(
+        "--format",
+        choices=["tar.gz", "tgz", "zip"],
+        help="archive format (default: inferred from output extension)",
+    )
+    pack.add_argument(
+        "--exclude",
+        action="append",
+        default=[],
+        help="glob pattern to exclude from the archive (repeatable)",
+    )
+    pack.add_argument(
+        "--json",
+        dest="json_output",
+        action="store_true",
+        help="emit machine-readable JSON",
+    )
+    pack.add_argument("--no-color", action="store_true")
+    pack.add_argument("-v", "--verbose", action="store_true")
+    pack.set_defaults(func=cmd_pack)
+
+    # unpack
+    unpack = sub.add_parser("unpack", help="extract and repair a LocalPip pack archive")
+    unpack.add_argument("archive", help="archive created by `localpip pack`")
+    unpack.add_argument("-d", "--destination", required=True, help="directory to unpack into")
+    unpack.add_argument("--force", action="store_true", help="allow unpacking into a non-empty dir")
+    unpack.add_argument(
+        "--json",
+        dest="json_output",
+        action="store_true",
+        help="emit machine-readable JSON",
+    )
+    unpack.add_argument("--no-color", action="store_true")
+    unpack.add_argument("-v", "--verbose", action="store_true")
+    unpack.set_defaults(func=cmd_unpack)
+
+    # verify
+    verify = sub.add_parser("verify", help="verify a LocalPip pack archive")
+    verify.add_argument("archive", help="archive created by `localpip pack`")
+    verify.add_argument(
+        "-d",
+        "--destination",
+        help="also verify an unpacked environment directory against the manifest",
+    )
+    verify.add_argument(
+        "--json",
+        dest="json_output",
+        action="store_true",
+        help="emit machine-readable JSON",
+    )
+    verify.add_argument("--no-color", action="store_true")
+    verify.add_argument("-v", "--verbose", action="store_true")
+    verify.set_defaults(func=cmd_verify_pack)
 
     # list
     ls = sub.add_parser("list", help="list wheels in a directory")

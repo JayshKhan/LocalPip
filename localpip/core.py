@@ -36,6 +36,8 @@ from typing import TYPE_CHECKING, Any, Callable
 # Note: packaging.tags is imported lazily inside `compatible_tags` and
 # `select_distribution` to keep `localpip --help` startup fast (~80 ms saved).
 from packaging.requirements import Requirement
+from packaging.specifiers import InvalidSpecifier, SpecifierSet
+from packaging.version import InvalidVersion
 from packaging.version import parse as parse_version
 
 if TYPE_CHECKING:
@@ -579,6 +581,35 @@ def build_environment(target: Target) -> dict[str, str]:
     return env
 
 
+def _requires_python_allows(requires_python: str | None, target: Target) -> bool:
+    """Return whether PyPI's requires_python marker allows the target Python."""
+    if not requires_python:
+        return True
+    try:
+        return SpecifierSet(requires_python).contains(target.python_version, prereleases=True)
+    except InvalidSpecifier:
+        logger.debug("ignoring invalid requires_python specifier: %r", requires_python)
+        return True
+
+
+def _file_supports_python(file_info: dict[str, Any], target: Target) -> bool:
+    return _requires_python_allows(file_info.get("requires_python"), target)
+
+
+def _release_supports_python(files: Sequence[dict[str, Any]], target: Target) -> bool:
+    return bool(files) and any(_file_supports_python(f, target) for f in files)
+
+
+def _sorted_valid_versions(versions: Iterable[str]) -> list[str]:
+    parsed: list[tuple[Any, str]] = []
+    for version in versions:
+        try:
+            parsed.append((parse_version(version), version))
+        except InvalidVersion:
+            logger.debug("ignoring invalid release version: %r", version)
+    return [version for _parsed, version in sorted(parsed)]
+
+
 class Resolver:
     """Fetches PackageInfo from PyPI mirrors, resolves dependency graphs."""
 
@@ -623,15 +654,25 @@ class Resolver:
                 continue
 
             try:
-                if req.specifier:
-                    matching = sorted(
-                        req.specifier.filter(data.get("releases", {}).keys()),
-                        key=parse_version,
-                    )
+                releases = data.get("releases", {}) or {}
+                if releases:
+                    versions = releases.keys()
+                    if req.specifier:
+                        versions = req.specifier.filter(versions)
+                    matching = [
+                        version
+                        for version in _sorted_valid_versions(versions)
+                        if _release_supports_python(releases.get(version, []), self.target)
+                    ]
                     if not matching:
-                        logger.warning("no versions of %s match %s", req.name, req.specifier)
+                        logger.warning(
+                            "no versions of %s match %s for Python %s",
+                            req.name,
+                            req.specifier or "<any>",
+                            self.target.python_version,
+                        )
                         continue
-                    target_version = str(matching[-1])
+                    target_version = matching[-1]
                     if target_version != data.get("info", {}).get("version"):
                         try:
                             data = self.http.get_json(
@@ -643,6 +684,16 @@ class Resolver:
                 info = data.get("info", {}) or {}
                 version = info.get("version") or ""
                 files = data.get("releases", {}).get(version, []) or data.get("urls", [])
+                if files:
+                    files = [f for f in files if _file_supports_python(f, self.target)]
+                    if not files:
+                        logger.warning(
+                            "%s==%s has no files for Python %s",
+                            req.name,
+                            version,
+                            self.target.python_version,
+                        )
+                        continue
                 return PackageInfo(
                     name=info.get("name") or req.name,
                     version=version,

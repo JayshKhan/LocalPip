@@ -7,7 +7,7 @@ import os
 
 import pytest
 
-from localpip.cli import build_parser, fmt_bytes, main
+from localpip.cli import _read_requirements_file, build_parser, fmt_bytes, main
 
 
 class TestParser:
@@ -53,6 +53,22 @@ class TestParser:
             ]
         )
         assert args.mirror == ["https://a.org/simple/", "https://b.org/simple/"]
+
+    def test_requirements_file_strips_inline_comments(self, tmp_path):
+        req = tmp_path / "requirements.txt"
+        req.write_text(
+            "flask>=3  # web framework\n"
+            "pkg @ https://example.test/pkg.whl#sha256=abc\n"
+            "requests\\\n"
+            "    >=2\n",
+            encoding="utf-8",
+        )
+
+        assert _read_requirements_file(str(req)) == [
+            "flask>=3",
+            "pkg @ https://example.test/pkg.whl#sha256=abc",
+            "requests >=2",
+        ]
 
 
 class TestFormatting:
@@ -119,6 +135,20 @@ class TestNewSubcommands:
         p = build_parser()
         args = p.parse_args(["download", "--lock", "lock.json", "-o", "wheels"])
         assert args.lock == "lock.json"
+
+    def test_pack_unpack_verify_subcommands_in_parser(self):
+        p = build_parser()
+
+        pack = p.parse_args(["pack", "/venv", "-o", "env.tar.gz"])
+        unpack = p.parse_args(["unpack", "env.tar.gz", "-d", "/target"])
+        verify = p.parse_args(["verify", "env.tar.gz", "-d", "/target"])
+
+        assert pack.command == "pack"
+        assert pack.environment == "/venv"
+        assert unpack.command == "unpack"
+        assert unpack.destination == "/target"
+        assert verify.command == "verify"
+        assert verify.destination == "/target"
 
 
 class TestListAndClean:

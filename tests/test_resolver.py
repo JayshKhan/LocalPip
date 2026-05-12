@@ -112,6 +112,87 @@ class TestGetPackageInfo:
         r = Resolver(_http(), PYPI_MIRRORS, Target("3.11"))
         assert r.get_package_info("requests>=99.0") is None
 
+    def test_chooses_latest_release_matching_target_python(
+        self, url_router, fake_response, pypi_json_response
+    ):
+        root_body = {
+            "info": {
+                "name": "pkg",
+                "version": "2.0.0",
+                "summary": "",
+                "author": "",
+                "license": "",
+                "requires_dist": None,
+            },
+            "releases": {
+                "1.0.0": [
+                    {
+                        "filename": "pkg-1.0.0-py3-none-any.whl",
+                        "url": "https://x/pkg-1.whl",
+                        "packagetype": "bdist_wheel",
+                        "requires_python": ">=3.8",
+                    }
+                ],
+                "2.0.0": [
+                    {
+                        "filename": "pkg-2.0.0-py3-none-any.whl",
+                        "url": "https://x/pkg-2.whl",
+                        "packagetype": "bdist_wheel",
+                        "requires_python": ">=3.12",
+                    }
+                ],
+            },
+        }
+        url_router(
+            {
+                "https://pypi.org/pypi/pkg/json": fake_response(root_body),
+                "https://pypi.org/pypi/pkg/1.0.0/json": fake_response(
+                    pypi_json_response(name="pkg", version="1.0.0")
+                ),
+            }
+        )
+
+        r = Resolver(_http(), PYPI_MIRRORS, Target("3.11"))
+        pkg = r.get_package_info("pkg")
+
+        assert pkg is not None
+        assert pkg.version == "1.0.0"
+
+    def test_filters_files_that_do_not_support_target_python(self, url_router, fake_response):
+        body = {
+            "info": {
+                "name": "pkg",
+                "version": "1.0.0",
+                "summary": "",
+                "author": "",
+                "license": "",
+                "requires_dist": None,
+            },
+            "releases": {
+                "1.0.0": [
+                    {
+                        "filename": "pkg-1.0.0-py3-none-any.whl",
+                        "url": "https://x/py311.whl",
+                        "packagetype": "bdist_wheel",
+                        "requires_python": ">=3.8",
+                    },
+                    {
+                        "filename": "pkg-1.0.0-py3-none-any.whl",
+                        "url": "https://x/py312.whl",
+                        "packagetype": "bdist_wheel",
+                        "requires_python": ">=3.12",
+                    },
+                ],
+            },
+        }
+        url_router({"https://pypi.org/pypi/pkg/json": fake_response(body)})
+
+        r = Resolver(_http(), PYPI_MIRRORS, Target("3.11"))
+        pkg = r.get_package_info("pkg")
+
+        assert pkg is not None
+        assert [f["url"] for f in pkg.files] == ["https://x/py311.whl"]
+
     def test_invalid_requirement_returns_none(self):
         r = Resolver(_http(), PYPI_MIRRORS, Target("3.11"))
         assert r.get_package_info("not a valid requirement!") is None

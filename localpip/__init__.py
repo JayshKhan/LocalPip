@@ -27,6 +27,17 @@ from localpip.core import (
     select_distribution,
     select_wheel,
 )
+from localpip.pack import (
+    PackError,
+    PackResult,
+    UnpackResult,
+    VerifyResult,
+    pack_environment,
+    read_manifest,
+    repair_environment,
+    unpack_archive,
+    verify_archive,
+)
 
 __version__ = "0.3.0"
 
@@ -41,13 +52,22 @@ __all__ = [
     "LockEntry",
     "LockFile",
     "PackageInfo",
+    "PackError",
+    "PackResult",
     "Resolver",
     "Target",
+    "UnpackResult",
+    "VerifyResult",
     "WheelNotFoundError",
     "default_config_path",
     "explain_no_match",
+    "pack_environment",
     "pick_sdist",
+    "read_manifest",
+    "repair_environment",
     "select_distribution",
     "select_wheel",
+    "unpack_archive",
+    "verify_archive",
     "__version__",
 ]
